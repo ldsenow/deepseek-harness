@@ -6,6 +6,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { HostDescription, IApiClient } from './api.ts'
 import { ConnectionController, type ConnectionConfig, type ConnectionSinks, type ConnectionState } from './connection.ts'
+import { bootstrapAuthToken } from './auth.ts'
 import { FixtureApiClient } from './fixture.ts'
 import { WebApiClient } from './web-api-client.ts'
 import { createWebConnectionRpc } from './rpc.ts'
@@ -82,6 +83,14 @@ export interface ConnectionHandle {
  * @param ctx - client cordis context.
  */
 export function apply(ctx: Context): void {
+  try {
+    bootstrapAuthToken()
+  } catch {
+    // Storage or cookie access denied by browser privacy settings — the only
+    // throwers the bootstrap touches. Boot continues unauthenticated: loopback
+    // pages never need the token, and a network page surfaces the ordinary
+    // reconnecting state.
+  }
   const pageLocation = typeof location === 'undefined' ? undefined : location
   const fixture = pageLocation !== undefined && new URLSearchParams(pageLocation.search).has('fixture')
   const fixtureClient = fixture ? new FixtureApiClient() : undefined

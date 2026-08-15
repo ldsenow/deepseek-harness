@@ -47,12 +47,15 @@ export interface Config {
   surfaceContext: boolean
   /** Explicit `--trusted-host` authorities from this invocation. */
   trustedHosts: string[]
+  /** Pairing token every non-loopback /api client must present; absent keeps the deployment loopback-only. */
+  pairingToken?: string
 }
 
 export const Config: z<Config> = z.object({
   printUrl: z.boolean().default(true),
   surfaceContext: z.boolean().default(true),
   trustedHosts: z.array(String).default([]),
+  pairingToken: z.string(),
 })
 
 /** Bind-dependent Web values shared by the trust fence and URL display. */
@@ -61,6 +64,8 @@ export interface WebRuntimeValues {
   lanAddresses: string[]
   /** LAN literals followed by explicit invocation authorities. */
   trustedHosts: string[]
+  /** This invocation's pairing token, forwarded to the /api admission fence and the pairing URL. */
+  pairingToken?: string
 }
 
 /** Environment variable naming the canonical local URL of this Web GUI. */
@@ -105,11 +110,12 @@ function webSurfacePrompt(webUrl: string): string {
     + 'Do not start a replacement server unless the user asks; if one is needed, use a managed background job and verify its exact URL.'
 }
 
-/** Resolve the canonical loopback URL from the active Web server. */
+/** Resolve the canonical loopback URL from the active Web server (scheme follows its TLS state). */
 function localWebUrl(ctx: Context): string {
-  const port = ctx.get('webServer')?.port
-  if (port === undefined) throw new Error('web-app: webServer service missing while resolving Web runtime')
-  return `http://${LOOPBACK_HOST}:${String(port)}`
+  const server = ctx.get('webServer')
+  const port = server?.port
+  if (server === undefined || port === undefined) throw new Error('web-app: webServer service missing while resolving Web runtime')
+  return `${server.scheme}://${LOOPBACK_HOST}:${String(port)}`
 }
 
 /** Dist location is workspace knowledge of this bundle: resolved through the frontend package exports, not configured. */
@@ -133,7 +139,10 @@ export const internals: { resolveDistIndex: () => string } = { resolveDistIndex 
  * @param config - validated {@link Config}.
  */
 export function apply(ctx: Context, config: Config): void {
-  const runtime = resolveLanTrust(ctx.webServer.host, config.trustedHosts)
+  const runtime: WebRuntimeValues = {
+    ...resolveLanTrust(ctx.webServer.host, config.trustedHosts),
+    ...config.pairingToken !== undefined && { pairingToken: config.pairingToken },
+  }
   // Release dependent rows only after bind-dependent trust has been sampled once.
   ctx.provide(WEB_RUNTIME_SERVICE, runtime)
   ctx.plugin(FrontendStatic, { distIndex: internals.resolveDistIndex() })
@@ -162,10 +171,14 @@ export function apply(ctx: Context, config: Config): void {
     // sibling rows (the /api route owner) are still mounting. Await Loader
     // settlement first; a hand-built tree without a Loader prints at once.
     const printUrl = (): void => {
-      // Reuse the exact LAN snapshot provided to the /api trust fence.
+      // Reuse the exact LAN snapshot provided to the /api trust fence. The LAN
+      // line is the pairing URL: opening it once on a device stores the token
+      // (the #auth fragment never reaches the server), after which the bare
+      // authority works.
       const lanCandidate = runtime.lanAddresses[0]
-      const port = ctx.webServer.port
-      console.log(`dsh web: ${localWebUrl(ctx)}${lanCandidate === undefined ? '' : ` (LAN: http://${lanCandidate}:${String(port)})`}`)
+      const { port, scheme } = ctx.webServer
+      const pairing = runtime.pairingToken === undefined ? '' : `/#auth=${runtime.pairingToken}`
+      console.log(`dsh web: ${localWebUrl(ctx)}${lanCandidate === undefined ? '' : ` (LAN: ${scheme}://${lanCandidate}:${String(port)}${pairing})`}`)
     }
     // This row's own activation can precede a sibling failure. The app owns
     // readiness by waiting for its Loader tree, or prints at once in a

@@ -2,7 +2,11 @@
 
 [English](README.md) | 中文
 
-dsh 浏览器表层组合包。[`cordis.patch.yml`](cordis.patch.yml) 叠加在 [`dsh-base`](../base/README.md) 之上：设置 coding persona，插入 Web 宿主行（webserver、API 网关、workspace、投影缓存、存储）、浏览器插件名录与始终挂载的客户端插件重载链（[`dsh-client-hmr`](../../client/hmr/README.md)，在重建 watcher 改写客户端 bundle 之前保持空闲），并挂载本包的 `web-runtime` 粘合插件（配置为 `{printUrl, surfaceContext, trustedHosts}`）。该插件通过 `@deepseek-ai/dsh-web-frontend` 的 exports 解析已构建的前端 dist，只采样一次依赖 bind 的 LAN 信任信息并将其作为 `webRuntime` 提供给浏览器信任栅栏和客户端名录，挂载 [`frontend-static`](../../host/frontend-static/README.md) 回退席位所有者，在 `surfaceContext` 为 true 时注册 Harness 源码与 Web 表层提示词段落，以及 bash 可见的 `DSH_WEB_URL` 运行时变量，并在 `printUrl` 为 true 时等自身的 Loader 配置树结算后再打印 `dsh web:` URL 行，避免兄弟行失败时公告一个已失效的应用。本组合包还持有应用命令行：普通 `web-startup` 提供方（[`src/startup.ts`](src/startup.ts)）注入 `ctx.cmdlineArgs`（[`dsh-cmdline`](../../boot/cmdline/README.md)），解析 `--host`、`--port`、可重复的 `--trusted-host` 以及应用自己的 `--help`，再提供 `webStartup`。它会在发布该服务前拒绝 `--host 0.0.0.0`，因为 CLI 目前有意不支持绑定所有网络接口。由 flag 配置的行会注入该服务，并在惰性配置中直接读取它，因此参数解析完成前不会有任何东西绑定端口，`dsh --profile web --help` 也不会启动服务器。[`dsh-headless`](../headless/README.md) 是同一 base 之上的同级表层，不挂载本组合包。
+dsh 浏览器表层组合包。[`cordis.patch.yml`](cordis.patch.yml) 叠加在 [`dsh-base`](../base/README.md) 之上：设置 coding persona，插入 Web 宿主行（webserver、API 网关、workspace、投影缓存、存储）、浏览器插件名录与始终挂载的客户端插件重载链（[`dsh-client-hmr`](../../client/hmr/README.md)，在重建 watcher 改写客户端 bundle 之前保持空闲），并挂载本包的 `web-runtime` 粘合插件（配置为 `{printUrl, surfaceContext, trustedHosts, pairingToken}`）。该插件通过 `@deepseek-ai/dsh-web-frontend` 的 exports 解析已构建的前端 dist，只采样一次依赖 bind 的 LAN 信任信息并连同配对 token 作为 `webRuntime` 提供给浏览器信任栅栏和客户端名录，挂载 [`frontend-static`](../../host/frontend-static/README.md) 回退席位所有者，在 `surfaceContext` 为 true 时注册 Harness 源码与 Web 表层提示词段落，以及 bash 可见的 `DSH_WEB_URL` 运行时变量，并在 `printUrl` 为 true 时等自身的 Loader 配置树结算后再打印 `dsh web:` URL 行，避免兄弟行失败时公告一个已失效的应用。本组合包还持有应用命令行：普通 `web-startup` 提供方（[`src/startup.ts`](src/startup.ts)）注入 `ctx.cmdlineArgs`（[`dsh-cmdline`](../../boot/cmdline/README.md)），解析 `--host`、`--port`、可重复的 `--trusted-host`、`--pairing-token` 以及应用自己的 `--help`，再提供 `webStartup`。由 flag 配置的行会注入该服务，并在惰性配置中直接读取它，因此参数解析完成前不会有任何东西绑定端口，`dsh --profile web --help` 也不会启动服务器。[`dsh-headless`](../headless/README.md) 是同一 base 之上的同级表层，不挂载本组合包。
+
+## LAN 服务：配对 token + TLS
+
+`dsh --profile web --host 0.0.0.0 --pairing-token <token>` 把 GUI 服务到本地网络。不带 `--pairing-token`（或 token 短于 16 个 `A-Za-z0-9_-` 字符，或带 `--trusted-host` 而没有 token）的调用是用法错误：`/api` 表面以本进程身份执行代码，因此每个非回环调用方都必须通过 [connection 插件](../../client/connection/README.md)强制执行的配对 token 认证。绑定所有网络接口同时启用 TLS：`web-tls` 提供方（[`src/tls.ts`](src/tls.ts)，配置为 `{enabled, dir}`）在 `dshHomePath('web-tls')` 下一次性生成自签名证书——SAN 携带回环名加生成时采样的 LAN 地址，有效期十年，密钥文件仅属主可读——并把 PEM 路径交给 webserver 行，因此重启后设备已接受的证书保持不变。打印的 LAN 行就是配对 URL `https://<lan-ip>:<port>/#auth=<token>`：在设备上打开一次即同时接受证书并存下 token，此后直接访问裸权威即可。回环绑定不提供 TLS 路径，本机服务保持明文 HTTP。
 
 ## 模型体验
 
@@ -23,4 +27,5 @@ dsh 浏览器表层组合包。[`cordis.patch.yml`](cordis.patch.yml) 叠加在 
 ## 已知限制与延期工作
 
 - **前端 dist 必须已构建**：对 dist 的 `require.resolve` 在激活时明确报错并给出构建提示；没有从源码直接服务的回退路径。
-- **`lanAddresses` 是启动期快照**：启动后的网卡变化不会重新公告；打印的 LAN URL 始终与配置的信任栅栏一致。
+- **`lanAddresses` 是启动期快照**：启动后的网卡变化不会重新公告；打印的 LAN URL 始终与配置的信任栅栏一致，而不在既有证书 SAN 中的 LAN 地址只会重新触发浏览器警告。
+- **直接输入裸 `ip:port` 可能先拨 `http://`**：部分浏览器对输入的权威默认走明文 HTTP，而 TLS 端口会拒绝它；打开一次打印出的 `https://` 配对链接后，浏览器此后会自动补全 `https`。有意不在同一端口上实现双协议嗅探。

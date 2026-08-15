@@ -44,11 +44,15 @@ function stageDist(): string {
 }
 
 /** A fake webServer capturing the fallback seat and index taps. */
-function fakeHttpServer(host: '127.0.0.1' | '0.0.0.0' = '127.0.0.1'): { server: WebServer; seat: () => unknown } {
+function fakeHttpServer(
+  host: '127.0.0.1' | '0.0.0.0' = '127.0.0.1',
+  scheme: 'http' | 'https' = 'http',
+): { server: WebServer; seat: () => unknown } {
   let fallback: unknown
   const server = {
     host,
     port: 4567,
+    scheme,
     registerFallback: (handler: unknown) => {
       fallback = handler
       return () => { fallback = undefined }
@@ -104,6 +108,29 @@ describe('web-app runtime glue', () => {
     expect(section?.text).toContain('pnpm run dev:web')
     const webRuntime = contributions.find(contribution => contribution.name === 'web-runtime')
     expect(webRuntime?.resolve()).toEqual({ DSH_WEB_URL: 'http://127.0.0.1:4567' })
+    await ctx.fiber.dispose()
+  })
+
+  it('prints the TLS pairing URL and forwards the token to the runtime service', async () => {
+    stageDist()
+    const ctx = new Context()
+    ctx.provide('webServer', fakeHttpServer('0.0.0.0', 'https').server)
+    provideLoader(ctx)
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    apply(ctx, new Config({
+      printUrl: true, surfaceContext: false, trustedHosts: [], pairingToken: 'web-app-pairing-token_01',
+    }))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(ctx.get('webRuntime')).toEqual({
+      lanAddresses: ['192.168.1.5'],
+      trustedHosts: ['192.168.1.5'],
+      pairingToken: 'web-app-pairing-token_01',
+    })
+    // The LAN line is the pairing URL: token in the fragment, which browsers
+    // never send to the server; the loopback URL stays bare.
+    expect(log).toHaveBeenCalledWith(
+      'dsh web: https://127.0.0.1:4567 (LAN: https://192.168.1.5:4567/#auth=web-app-pairing-token_01)',
+    )
     await ctx.fiber.dispose()
   })
 

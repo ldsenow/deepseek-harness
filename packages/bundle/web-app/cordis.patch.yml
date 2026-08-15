@@ -109,15 +109,28 @@
 
     # ── layer 2: transport/service ──────────────────────────────────────────────
 
+    # TLS material for network serving: an all-interfaces bind gets a
+    # persistent self-signed certificate (paths only; the key never enters a
+    # config surface), a loopback bind provides no paths and stays plain HTTP.
+    - id: web-tls
+      name: '@deepseek-ai/dsh-web-app/tls'
+      inject: [webStartup]
+      config:
+        enabled: !!js (ctx.webStartup.host ?? '127.0.0.1') === '0.0.0.0'
+        dir: !!js dshHomePath('web-tls')
+
     # Plain route-registration carrier; host and port come from the app's
-    # webStartup provider, with these deployment fallbacks. The dist is served by
-    # the web-runtime row below through the fallback seat.
+    # webStartup provider, with these deployment fallbacks, and TLS paths from
+    # the web-tls provider. The dist is served by the web-runtime row below
+    # through the fallback seat.
     - id: webserver
       name: '@deepseek-ai/dsh-host-webserver'
-      inject: [webStartup]
+      inject: [webStartup, webTls]
       config:
         host: !!js ctx.webStartup.host ?? '127.0.0.1'
         port: !!js ctx.webStartup.port ?? 3080
+        tlsCertPath: !!js ctx.webTls.paths?.certPath
+        tlsKeyPath: !!js ctx.webTls.paths?.keyPath
 
     # Web glue owned by this bundle: resolves the built frontend dist (an
     # assembly fact of dsh-web-app, never user config), mounts the
@@ -134,6 +147,7 @@
         printUrl: true
         surfaceContext: true
         trustedHosts: !!js ctx.webStartup.trustedHosts
+        pairingToken: !!js ctx.webStartup.pairingToken
 
     # The client-plugin reload chain, always mounted: it is idle until a
     # rebuild watcher (pnpm run dev:web) actually rewrites client bundles. It
@@ -160,7 +174,9 @@
         # LAN literals derived from the active bind plus --trusted-host extras.
         # A deployment adding authorities keeps this expression and concatenates
         # its literals, for example: ['app.internal', ...ctx.webRuntime.trustedHosts].
+        # Non-loopback admission additionally requires the pairing token.
         trustedHosts: !!js ctx.webRuntime.trustedHosts
+        pairingToken: !!js ctx.webRuntime.pairingToken
 
     - id: api-remotes
       name: '@deepseek-ai/dsh-api-remotes'

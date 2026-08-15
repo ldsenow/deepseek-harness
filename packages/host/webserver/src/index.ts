@@ -8,7 +8,9 @@
  * IPC bridge. This package never prints: the URL line belongs to the shell.
  */
 
+import { readFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
+import { createServer as createTlsServer } from 'node:https'
 import type { IncomingMessage, ServerResponse, Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import type { Duplex } from 'node:stream'
@@ -41,12 +43,16 @@ export interface WebUpgradeRoute {
   handler: (req: IncomingMessage, socket: Duplex, head: Buffer) => void | Promise<void>
 }
 
-/** Gateway config: the listen address. */
+/** Gateway config: the listen address and optional TLS material. */
 export interface Config {
   /** Listen host; the two supported values are loopback and all-interfaces. */
   host: '127.0.0.1' | '0.0.0.0'
   /** Listen port; zero requests an OS-assigned port. */
   port: number
+  /** PEM certificate file served to clients; set together with {@link tlsKeyPath} to serve HTTPS. */
+  tlsCertPath?: string
+  /** PEM private-key file for {@link tlsCertPath}; a path, never inline material, so config surfaces cannot carry the key. */
+  tlsKeyPath?: string
 }
 
 /**
@@ -60,6 +66,8 @@ export class WebServer extends Service {
   static Config: z<Config> = z.object({
     host: z.union([z.const('127.0.0.1'), z.const('0.0.0.0')]).required(),
     port: z.natural().max(65535).required(),
+    tlsCertPath: z.string(),
+    tlsKeyPath: z.string(),
   })
 
   private readonly exact = new Map<string, WebRoute>()
@@ -83,6 +91,11 @@ export class WebServer extends Service {
   /** The configured bind host (the loopback or all-interfaces literal). */
   get host(): Config['host'] {
     return this.config.host
+  }
+
+  /** URL scheme this server answers: 'https' when TLS material is configured, else 'http'. */
+  get scheme(): 'http' | 'https' {
+    return this.config.tlsCertPath !== undefined ? 'https' : 'http'
   }
 
   /**
@@ -167,7 +180,7 @@ export class WebServer extends Service {
     // rejection killing the process on one malformed request (bad %-escape,
     // client dropping mid-body). Per-request failures log and answer 400 —
     // never a process exit.
-    this.server = createServer((req, res) => {
+    const listener = (req: IncomingMessage, res: ServerResponse): void => {
       handle(req, res).catch((err: unknown) => {
         this.ctx.logger.warn(err instanceof Error ? err : new Error(String(err)))
         if (res.headersSent) {
@@ -177,7 +190,11 @@ export class WebServer extends Service {
         res.writeHead(400)
         res.end()
       })
-    })
+    }
+    const tls = await this.resolveTls()
+    this.server = tls === undefined
+      ? createServer(listener)
+      : createTlsServer(tls, listener)
     this.server.on('upgrade', (req, socket, head) => {
       const onError = (error: Error): void => {
         this.ctx.logger.warn(error)
@@ -236,6 +253,20 @@ export class WebServer extends Service {
       }))
       await Promise.all([serverClosed, ...upgradedClosed])
     }, 'webServer.listen')
+  }
+
+  /**
+   * Load the configured TLS material, or undefined for plain HTTP. Half a
+   * pair, an unreadable file, or non-key/cert PEM content rejects activation:
+   * a deployment that asked for TLS must never silently serve plaintext.
+   */
+  private async resolveTls(): Promise<{ cert: Buffer; key: Buffer } | undefined> {
+    const { tlsCertPath, tlsKeyPath } = this.config
+    if (tlsCertPath === undefined && tlsKeyPath === undefined) return undefined
+    if (tlsCertPath === undefined || tlsKeyPath === undefined) {
+      throw new Error('webserver: tlsCertPath and tlsKeyPath must be configured together')
+    }
+    return { cert: await readFile(tlsCertPath), key: await readFile(tlsKeyPath) }
   }
 
   /** Longest-prefix-wins over the prefix table after an exact-table miss. */

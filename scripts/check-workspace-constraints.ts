@@ -172,6 +172,8 @@ function expectedDshPackageFiles(manifest: PackageManifest): readonly string[] {
     // A surface bundle's startup row is its own bundle: the Loader imports it
     // as a row module, so it cannot ride inside the package entry.
     ...exportDefault(manifest, './startup') === './lib/startup.js' ? ['lib/startup.js'] : [],
+    // Same ruling for the web bundle's TLS-material row.
+    ...exportDefault(manifest, './tls') === './lib/tls.js' ? ['lib/tls.js'] : [],
     ...extras,
     // Subpaths whose runtime default is the tsc-emitted tree (lib/types/*.js —
     // browser-safe source channels rehomed off src so plain Node can import

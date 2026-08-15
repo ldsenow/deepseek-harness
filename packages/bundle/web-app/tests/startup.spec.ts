@@ -58,6 +58,7 @@ export const apply = ctx => globalThis.__webStartupApply(ctx)
     "    host: !!js ctx.webStartup.host ?? '127.0.0.1'",
     '    port: !!js ctx.webStartup.port ?? 3080',
     '    trustedHosts: !!js ctx.webStartup.trustedHosts',
+    '    pairingToken: !!js ctx.webStartup.pairingToken',
     '- id: provider',
     `  name: ${pathToFileURL(join(dir, 'provider.mjs')).href}`,
     '',
@@ -92,11 +93,13 @@ describe('web command-line provider', () => {
       '--port', '8080',
       '--trusted-host', 'lab.internal', 'lab-2.internal',
       '--trusted-host', '10.0.0.9',
+      '--pairing-token', 'startup-pairing-token_01',
     ])
     expect(values).toEqual({
       host: '127.0.0.1',
       port: 8080,
       trustedHosts: ['lab.internal', 'lab-2.internal', '10.0.0.9'],
+      pairingToken: 'startup-pairing-token_01',
     })
     expect(observed.readerConfig).toEqual(values)
     expect(observed.exits).toEqual([])
@@ -129,11 +132,35 @@ describe('web command-line provider', () => {
     expect(observed.exits).toEqual([1])
   })
 
-  it('rejects the intentionally unsupported all-interfaces host before the consumer activates', async () => {
+  it('rejects the all-interfaces host without a pairing token before the consumer activates', async () => {
     const { values, observed } = await bootProvider(['--host', '0.0.0.0'])
-    expect(observed.out).toContain('--host 0.0.0.0 is intentionally not supported yet for safety: it would expose remote code execution to the network; use 127.0.0.1 instead')
+    expect(observed.out).toContain('--host 0.0.0.0 exposes remote code execution to the network, so it requires --pairing-token')
     expect(values).toBeUndefined()
     expect(observed.readerConfig).toBeUndefined()
+    expect(observed.exits).toEqual([1])
+  })
+
+  it('publishes the all-interfaces host once a pairing token accompanies it', async () => {
+    const { values, observed } = await bootProvider(['--host', '0.0.0.0', '--pairing-token', 'startup-pairing-token_01'])
+    expect(values).toEqual({
+      host: '0.0.0.0',
+      trustedHosts: [],
+      pairingToken: 'startup-pairing-token_01',
+    })
+    expect(observed.exits).toEqual([])
+  })
+
+  it('rejects a malformed pairing token before the consumer activates', async () => {
+    const { values, observed } = await bootProvider(['--pairing-token', 'short'])
+    expect(observed.out).toContain('--pairing-token must be at least 16 characters of A-Za-z0-9_-')
+    expect(values).toBeUndefined()
+    expect(observed.exits).toEqual([1])
+  })
+
+  it('rejects trusted authorities without a pairing token before the consumer activates', async () => {
+    const { values, observed } = await bootProvider(['--trusted-host', 'lab.internal'])
+    expect(observed.out).toContain('--trusted-host requires --pairing-token')
+    expect(values).toBeUndefined()
     expect(observed.exits).toEqual([1])
   })
 })
