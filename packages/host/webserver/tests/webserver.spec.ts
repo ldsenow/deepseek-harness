@@ -7,11 +7,14 @@
 
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { once } from 'node:events'
+import { request as httpsRequest } from 'node:https'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { connect as tlsConnect } from 'node:tls'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+import { generate } from 'selfsigned'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
@@ -28,7 +31,7 @@ afterEach(async () => {
 })
 
 /** Write a cordis.yml with one webserver row, then boot it through the real Loader. */
-async function loadComposition(port = 0): Promise<Context> {
+async function loadComposition(port = 0, tls?: { tlsCertPath?: string; tlsKeyPath?: string }): Promise<Context> {
   root = await mkdtemp(join(tmpdir(), 'dsh-webserver-loader-'))
   const configPath = join(root, 'cordis.yml')
   await writeFile(configPath, [
@@ -36,6 +39,8 @@ async function loadComposition(port = 0): Promise<Context> {
     '  config:',
     "    host: '127.0.0.1'",
     `    port: ${String(port)}`,
+    ...tls?.tlsCertPath === undefined ? [] : [`    tlsCertPath: ${JSON.stringify(tls.tlsCertPath)}`],
+    ...tls?.tlsKeyPath === undefined ? [] : [`    tlsKeyPath: ${JSON.stringify(tls.tlsKeyPath)}`],
     '',
   ].join('\n'))
 
@@ -100,6 +105,7 @@ describe('real Loader composition', () => {
     expect(server).toBeInstanceOf(HttpServer)
     const port = server.port
     expect(port).toBeGreaterThan(0)
+    expect(server.scheme).toBe('http')
 
     // Routing precedence: exact beats prefix, longest prefix wins, a prefix
     // route answers its own path, and routes own their method handling
@@ -198,6 +204,87 @@ describe('real Loader composition', () => {
     expect(upgradedServerClosed).toBe(true)
     upgraded.destroy()
     await expect(request(port, '/probe')).rejects.toThrow()
+  })
+
+  it('serves HTTPS routes and upgrades when TLS material is configured', { timeout: 60_000 }, async () => {
+    // Ephemeral in-test material: no committed keys, and the client pins the
+    // exact generated certificate instead of disabling verification.
+    const material = await mkdtemp(join(tmpdir(), 'dsh-webserver-tls-'))
+    const pems = await generate([{ name: 'commonName', value: 'localhost' }], {
+      algorithm: 'sha256',
+      extensions: [{ name: 'subjectAltName', altNames: [{ type: 7, ip: '127.0.0.1' }] }],
+    })
+    const tlsCertPath = join(material, 'cert.pem')
+    const tlsKeyPath = join(material, 'key.pem')
+    await writeFile(tlsCertPath, pems.cert)
+    await writeFile(tlsKeyPath, pems.private)
+    try {
+      const loaded = await loadComposition(0, { tlsCertPath, tlsKeyPath })
+      const server = loaded.webServer
+      expect(server.scheme).toBe('https')
+      const port = server.port
+      server.register({ kind: 'exact', path: '/probe', handler: (_req, res) => { res.writeHead(200); res.end('SECURE') } })
+      const answered = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const req = httpsRequest(
+          { host: '127.0.0.1', port, path: '/probe', ca: pems.cert },
+          (res) => {
+            const chunks: Buffer[] = []
+            res.on('data', (chunk: Buffer) => chunks.push(chunk))
+            res.on('end', () => { resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString() }) })
+          },
+        )
+        req.on('error', reject)
+        req.end()
+      })
+      expect(answered).toEqual({ status: 200, body: 'SECURE' })
+
+      // The upgrade path negotiates over the TLS socket exactly like plain HTTP.
+      server.registerUpgrade({
+        path: '/events',
+        handler: (_req, socket) => {
+          socket.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: dsh-test\r\n\r\n')
+        },
+      })
+      const socket = tlsConnect({ host: '127.0.0.1', port, ca: pems.cert })
+      await once(socket, 'secureConnect')
+      const response = once(socket, 'data')
+      socket.write([
+        'GET /events HTTP/1.1',
+        `Host: 127.0.0.1:${String(port)}`,
+        'Connection: Upgrade',
+        'Upgrade: dsh-test',
+        '',
+        '',
+      ].join('\r\n'))
+      const [data] = await response as [Buffer]
+      expect(String(data)).toContain('101 Switching Protocols')
+      socket.destroy()
+      await loaded.fiber.dispose()
+    } finally {
+      await rm(material, { recursive: true, force: true })
+    }
+  })
+
+  it('fails the fiber on unreadable or half-configured TLS material', { timeout: 60_000 }, async () => {
+    let failure: unknown
+    try {
+      await loadComposition(0, { tlsCertPath: '/no/such/cert.pem', tlsKeyPath: '/no/such/key.pem' })
+    } catch (error) {
+      failure = error
+    }
+    expect(String(failure)).toMatch(/failed to apply loader entry.*ENOENT/)
+    await context?.fiber.dispose()
+    if (root !== undefined) await rm(root, { recursive: true, force: true })
+    context = undefined
+    root = undefined
+
+    let half: unknown
+    try {
+      await loadComposition(0, { tlsCertPath: '/no/such/cert.pem' })
+    } catch (error) {
+      half = error
+    }
+    expect(String(half)).toMatch(/tlsCertPath and tlsKeyPath must be configured together/)
   })
 
   it('fails the fiber when the port is already taken (fail-loud at activation)', { timeout: 60_000 }, async () => {

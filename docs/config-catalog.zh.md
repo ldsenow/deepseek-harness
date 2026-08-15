@@ -407,12 +407,22 @@ export interface ConnectionConfig {
    * that is not a bare, canonical authority fails the plugin load.
    */
   trustedHosts?: string[]
+  /**
+   * Pairing token every non-loopback /api request must present — as the
+   * `dsh_auth` cookie the browser client sets after opening a
+   * `#auth=<token>` pairing link, or an `Authorization: Bearer` header. At
+   * least 16 characters of `A-Za-z0-9_-`; anything else fails the load.
+   * Required together with a non-empty `trustedHosts`: a declared authority
+   * without a token could admit no request, so that combination also fails
+   * the load. Loopback callers never need it.
+   */
+  pairingToken?: string
   /** Maximum buffered JSON body for every `/api` request. */
   maxRequestBodyBytes?: number
 }
 ```
 
-来源：[`packages/client/connection/src/index.ts:50`](../packages/client/connection/src/index.ts)
+来源：[`packages/client/connection/src/index.ts:53`](../packages/client/connection/src/index.ts)
 
 <a id="deepseek-aidsh-client-hmr"></a>
 
@@ -792,16 +802,20 @@ export interface Config {
 ## `@deepseek-ai/dsh-host-webserver`
 
 ```ts config-catalog
-/** Gateway config: the listen address. */
+/** Gateway config: the listen address and optional TLS material. */
 export interface Config {
   /** Listen host; the two supported values are loopback and all-interfaces. */
   host: '127.0.0.1' | '0.0.0.0'
   /** Listen port; zero requests an OS-assigned port. */
   port: number
+  /** PEM certificate file served to clients; set together with {@link tlsKeyPath} to serve HTTPS. */
+  tlsCertPath?: string
+  /** PEM private-key file for {@link tlsCertPath}; a path, never inline material, so config surfaces cannot carry the key. */
+  tlsKeyPath?: string
 }
 ```
 
-来源：[`packages/host/webserver/src/index.ts:45`](../packages/host/webserver/src/index.ts)
+来源：[`packages/host/webserver/src/index.ts:47`](../packages/host/webserver/src/index.ts)
 
 <a id="deepseek-aidsh-invariants"></a>
 
@@ -2886,6 +2900,8 @@ export interface Config {
   surfaceContext: boolean
   /** Explicit `--trusted-host` authorities from this invocation. */
   trustedHosts: string[]
+  /** Pairing token every non-loopback /api client must present; absent keeps the deployment loopback-only. */
+  pairingToken?: string
 }
 ```
 

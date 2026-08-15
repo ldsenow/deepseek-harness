@@ -74,7 +74,15 @@ function fakeResponse(): { response: ServerResponse; state: { status?: number; b
   return { response, state }
 }
 
-async function mounted(config?: { trustedHosts?: string[] }): Promise<{
+/** The deployment pairing token every non-loopback request must present. */
+const AUTH_TOKEN = 'unit-pairing-token_A-1234'
+
+/** Headers of an authenticated request: the pairing cookie beside the caller's own headers. */
+function authed(headers: Record<string, string>): Record<string, string> {
+  return { cookie: `dsh_auth=${AUTH_TOKEN}`, ...headers }
+}
+
+async function mounted(config?: { trustedHosts?: string[]; pairingToken?: string }): Promise<{
   routes: WebRoute[]
   upgrades: WebUpgradeRoute[]
   dispose: () => Promise<void>
@@ -161,13 +169,15 @@ describe('connection node half', () => {
     await dispose()
   })
 
-  it('pins privileged methods to loopback even for a declared trusted authority', async () => {
-    const { routes, dispose } = await mounted({ trustedHosts: ['harness.example'] })
+  it('pins privileged methods to loopback even for a declared, authenticated trusted authority', async () => {
+    const { routes, dispose } = await mounted({ trustedHosts: ['harness.example'], pairingToken: AUTH_TOKEN })
     // The privileged set: native dialogs plus the whole settings/credential
     // configuration plane, reads included, plus the one method that makes the
     // host fetch a caller-chosen URL. The same declared authority reaches
     // ordinary reads (carrier-level 404 from the empty proxy proves the fence
-    // passed), but each privileged method stays loopback-only and 403s.
+    // passed), but each privileged method stays loopback-only and 403s —
+    // every request below presents the valid pairing token, so the pin, not
+    // missing authentication, is what denies.
     for (const method of [
       'host.pickDirectory', 'host.openPath',
       'settings.describe', 'settings.openDocument', 'settings.update', 'settings.replace', 'settings.mutate',
@@ -180,37 +190,71 @@ describe('connection node half', () => {
     ]) {
       const denied = fakeResponse()
       await routes[0]!.handler(
-        fakeRequest({ host: 'harness.example' }, `${API_PATH}/${method}`),
+        fakeRequest(authed({ host: 'harness.example' }), `${API_PATH}/${method}`),
         denied.response,
       )
       expect(denied.state.status).toBe(403)
       expect(denied.state.body).toBe('forbidden')
     }
     const read = fakeResponse()
-    await routes[0]!.handler(fakeRequest({ host: 'harness.example' }), read.response)
+    await routes[0]!.handler(fakeRequest(authed({ host: 'harness.example' })), read.response)
     expect(read.state.status).not.toBe(403)
     await dispose()
   })
 
-  it('passes loopback and declared-authority requests through to the bridge', async () => {
-    const { routes, dispose } = await mounted({ trustedHosts: ['harness.example:3080', '192.168.1.5'] })
-    // Loopback, no browser markers (curl shape): the fence passes; the carrier
-    // answers 404 for a GET unary path — proof the bridge ran.
+  it('passes loopback tokenless and admits declared authorities only with the pairing token', async () => {
+    const { routes, upgrades, dispose } = await mounted({ trustedHosts: ['harness.example:3080', '192.168.1.5'], pairingToken: AUTH_TOKEN })
+    // Loopback, no browser markers and no token (curl shape): the fence
+    // passes; the carrier answers 404 for a GET unary path — proof the bridge ran.
     const loopback = fakeResponse()
     await routes[0]!.handler(fakeRequest({ host: '127.0.0.1:3080' }), loopback.response)
     expect(loopback.state.status).toBe(404)
-    // An all-interfaces composition derives port-less LAN IP literals, which
-    // pass markerless curl on any port.
+    // An all-interfaces composition derives port-less LAN IP literals; the
+    // pairing cookie the client sets after pairing admits them on any port.
     const lan = fakeResponse()
-    await routes[0]!.handler(fakeRequest({ host: '192.168.1.5:3080' }), lan.response)
+    await routes[0]!.handler(fakeRequest(authed({ host: '192.168.1.5:3080' })), lan.response)
     expect(lan.state.status).toBe(404)
-    // Declared public authority, same-origin browser shape.
+    // The same LAN authority without the token stops at the admission fence,
+    // on the HTTP route and the WebSocket upgrade alike.
+    const anonymous = fakeResponse()
+    await routes[0]!.handler(fakeRequest({ host: '192.168.1.5:3080' }), anonymous.response)
+    expect(anonymous.state).toMatchObject({ status: 403, body: 'forbidden' })
+    const socket = new PassThrough()
+    const chunks: Buffer[] = []
+    socket.on('data', (chunk: Buffer) => { chunks.push(chunk) })
+    const ended = once(socket, 'end')
+    await upgrades[0]!.handler(fakeRequest({ host: '192.168.1.5:3080' }, MUX_EVENTS_PATH), socket, Buffer.alloc(0))
+    await ended
+    expect(Buffer.concat(chunks).toString()).toContain('HTTP/1.1 403 Forbidden')
+    // A wrong token is refused like a missing one.
+    const wrong = fakeResponse()
+    await routes[0]!.handler(fakeRequest({ host: '192.168.1.5:3080', cookie: 'dsh_auth=not-the-configured-token' }), wrong.response)
+    expect(wrong.state.status).toBe(403)
+    // Declared public authority, same-origin browser shape, Bearer form (the
+    // non-browser client path).
     const declared = fakeResponse()
     await routes[0]!.handler(fakeRequest({
       host: 'harness.example:3080', origin: 'http://harness.example:3080', 'sec-fetch-site': 'same-origin',
+      authorization: `Bearer ${AUTH_TOKEN}`,
     }), declared.response)
     expect(declared.state.status).toBe(404)
     await dispose()
+  })
+
+  it('fails the load on a malformed pairing token or trusted authorities without one', async () => {
+    const invalid: [{ pairingToken?: string; trustedHosts?: string[] }, RegExp][] = [
+      [{ pairingToken: 'short' }, /pairingToken must be at least 16 characters/],
+      [{ trustedHosts: ['harness.example'] }, /trustedHosts requires pairingToken/],
+    ]
+    for (const [config, message] of invalid) {
+      const ctx = new Context()
+      const routes: WebRoute[] = []
+      ctx.provide('webServer', fakeHttpServer(routes, []) as WebServer)
+      ctx.provide('apiProxy', {} as unknown as ApiProxy)
+      const fiber = ctx.plugin({ inject: [...inject], apply }, config)
+      await expect(fiber).rejects.toThrow(message)
+      expect(routes).toHaveLength(0)
+    }
   })
 
   it('provides a disposable dedicated RPC channel without requiring apiProxy', async () => {
@@ -264,7 +308,7 @@ describe('connection node half', () => {
     const routes: WebRoute[] = []
     ctx.provide('webServer', fakeHttpServer(routes, []) as WebServer)
     ctx.provide('apiProxy', {} as unknown as ApiProxy)
-    const fiber = ctx.plugin({ inject: [...inject], apply }, { trustedHosts: ['harness.example'] })
+    const fiber = ctx.plugin({ inject: [...inject], apply }, { trustedHosts: ['harness.example'], pairingToken: AUTH_TOKEN })
     await fiber.await()
     const connection = ctx.get('connection') as HostConnectionHandle
     const calls: unknown[] = []
@@ -330,8 +374,9 @@ describe('connection node half', () => {
       async () => ({ ok: true, value: null }),
       { authority: 'loopback' },
     )
+    // The valid pairing token does not soften a loopback-pinned interceptor.
     const loopbackOnly = fakeResponse()
-    await route.handler(fakePost({ host: 'harness.example' }, '/api/goals/create', request), loopbackOnly.response)
+    await route.handler(fakePost(authed({ host: 'harness.example' }), '/api/goals/create', request), loopbackOnly.response)
     expect(loopbackOnly.state.status).toBe(403)
     await removeLoopback()
     await fiber.dispose()
@@ -341,7 +386,7 @@ describe('connection node half', () => {
     const ctx = new Context()
     const routes: WebRoute[] = []
     ctx.provide('webServer', fakeHttpServer(routes, []) as WebServer)
-    const fiber = ctx.plugin({ inject: [...inject], apply }, { trustedHosts: ['harness.example'] })
+    const fiber = ctx.plugin({ inject: [...inject], apply }, { trustedHosts: ['harness.example'], pairingToken: AUTH_TOKEN })
     await fiber.await()
     const connection = ctx.get('connection') as HostConnectionHandle
     const remove = connection.rpc.handle('/rpc', async (endpoint) => {
@@ -356,8 +401,12 @@ describe('connection node half', () => {
     await route.handler(fakePost({ host: 'other.example' }, '/rpc/goals/create', {}), denied.response)
     expect(denied.state).toMatchObject({ status: 403, body: 'forbidden' })
 
+    const anonymous = fakeResponse()
+    await route.handler(fakePost({ host: 'harness.example' }, '/rpc/goals/create', {}), anonymous.response)
+    expect(anonymous.state).toMatchObject({ status: 403, body: 'forbidden' })
+
     const methodMismatch = fakeResponse()
-    await route.handler(fakePost({ host: 'harness.example' }, '/rpc/goals/create', {
+    await route.handler(fakePost(authed({ host: 'harness.example' }), '/rpc/goals/create', {
       type: 'client-request', rpcId: 'rpc-bad', method: 'other', payload: {},
     }), methodMismatch.response)
     expect(JSON.parse(String(methodMismatch.state.body))).toMatchObject({
@@ -366,12 +415,12 @@ describe('connection node half', () => {
     })
 
     for (const [request, status] of [
-      [fakeRequest({ host: 'harness.example' }, '/rpc/goals/create'), 404],
-      [fakePost({ host: 'harness.example' }, '/outside/goals/create', {}), 404],
-      [fakePost({ host: 'harness.example' }, '/rpc/goals//create', {}), 404],
-      [fakeRawPost({ host: 'harness.example' }, '/rpc/goals/create', '{}'), 415],
-      [fakeRawPost({ host: 'harness.example', 'content-type': 'text/plain' }, '/rpc/goals/create', '{}'), 415],
-      [fakeRawPost({ host: 'harness.example', 'content-type': 'application/json; charset=utf-8' }, '/rpc/goals/create', '{'), 400],
+      [fakeRequest(authed({ host: 'harness.example' }), '/rpc/goals/create'), 404],
+      [fakePost(authed({ host: 'harness.example' }), '/outside/goals/create', {}), 404],
+      [fakePost(authed({ host: 'harness.example' }), '/rpc/goals//create', {}), 404],
+      [fakeRawPost(authed({ host: 'harness.example' }), '/rpc/goals/create', '{}'), 415],
+      [fakeRawPost(authed({ host: 'harness.example', 'content-type': 'text/plain' }), '/rpc/goals/create', '{}'), 415],
+      [fakeRawPost(authed({ host: 'harness.example', 'content-type': 'application/json; charset=utf-8' }), '/rpc/goals/create', '{'), 400],
     ] as const) {
       const response = fakeResponse()
       await route.handler(request, response.response)
@@ -384,7 +433,7 @@ describe('connection node half', () => {
       [null, 'invalid-request'],
     ] as const) {
       const response = fakeResponse()
-      await route.handler(fakePost({ host: 'harness.example' }, '/rpc/goals/create', body), response.response)
+      await route.handler(fakePost(authed({ host: 'harness.example' }), '/rpc/goals/create', body), response.response)
       expect(JSON.parse(String(response.state.body))).toMatchObject({
         rpcId,
         result: { ok: false, error: { code: 'bad-request' } },
@@ -392,7 +441,7 @@ describe('connection node half', () => {
     }
 
     const failed = fakeResponse()
-    await route.handler(fakePost({ host: 'harness.example' }, '/rpc/fail', {
+    await route.handler(fakePost(authed({ host: 'harness.example' }), '/rpc/fail', {
       type: 'client-request', rpcId: 'rpc-fail', method: 'fail', payload: {},
     }), failed.response)
     expect(failed.state).toMatchObject({ status: 500, body: 'handler failure: Error: handler broke' })
@@ -408,8 +457,9 @@ describe('connection node half', () => {
       authority: 'loopback',
     })
     const loopbackRoute = routes.find(candidate => candidate.path === '/loopback')!
+    // The valid pairing token does not soften a loopback-authority channel.
     const publicResponse = fakeResponse()
-    await loopbackRoute.handler(fakePost({ host: 'harness.example' }, '/loopback/read', {
+    await loopbackRoute.handler(fakePost(authed({ host: 'harness.example' }), '/loopback/read', {
       type: 'client-request', rpcId: 'rpc-public', method: 'read', payload: {},
     }), publicResponse.response)
     expect(publicResponse.state.status).toBe(403)
@@ -439,10 +489,10 @@ describe('connection node half over a real HTTP server', () => {
   }
 
   /** One real request; `host` spoofs the authority the way a LAN client's browser would send it. */
-  function call(port: number, method: string, host: string): Promise<number> {
+  function call(port: number, method: string, host: string, headers: Record<string, string> = {}): Promise<number> {
     return new Promise((resolve, reject) => {
       const request = httpRequest(
-        { host: '127.0.0.1', port, path: `${API_PATH}/${method}`, method: 'GET', headers: { host } },
+        { host: '127.0.0.1', port, path: `${API_PATH}/${method}`, method: 'GET', headers: { host, ...headers } },
         (response) => {
           response.resume()
           response.on('end', () => { resolve(response.statusCode ?? 0) })
@@ -457,8 +507,10 @@ describe('connection node half over a real HTTP server', () => {
     // The fence's input is a real IncomingMessage parsed by Node from the
     // wire, not a hand-assembled object: the Host header a LAN browser sends
     // is exactly what decides loopback-only here, so the boundary is asserted
-    // against the parse the server actually performs.
-    const { routes, dispose } = await mounted({ trustedHosts: ['harness.example'] })
+    // against the parse the server actually performs. Every non-loopback
+    // request presents the pairing cookie: the pin, not authentication, is
+    // what these assertions prove.
+    const { routes, dispose } = await mounted({ trustedHosts: ['harness.example'], pairingToken: AUTH_TOKEN })
     const { port, close } = await serve(routes)
     try {
       // Reads are as privileged as writes: describe returns the exposed
@@ -472,7 +524,7 @@ describe('connection node half over a real HTTP server', () => {
         'llm.discoverModels',
         'agentPreset.read', 'agentPreset.copy', 'agentPreset.openDocument', 'agentPreset.remove',
       ]) {
-        expect([method, await call(port, method, 'harness.example')]).toEqual([method, 403])
+        expect([method, await call(port, method, 'harness.example', { cookie: `dsh_auth=${AUTH_TOKEN}` })]).toEqual([method, 403])
       }
       // The model catalog stays reachable for the same authority: a LAN
       // client's model picker needs it, and it carries no key or endpoint
@@ -483,9 +535,11 @@ describe('connection node half over a real HTTP server', () => {
       // deployment's own default already carries bash, so pinning the switch
       // would be a fence beside an open gate.
       for (const method of ['llm.providers', 'llm.models', 'agentPreset.list', 'agentPreset.select']) {
-        expect([method, await call(port, method, 'harness.example')]).toEqual([method, 404])
+        expect([method, await call(port, method, 'harness.example', { cookie: `dsh_auth=${AUTH_TOKEN}` })]).toEqual([method, 404])
       }
-      // Loopback reaches everything, configuration included.
+      // The same catalog read without the pairing token stops at admission.
+      expect(await call(port, 'llm.providers', 'harness.example')).toBe(403)
+      // Loopback reaches everything tokenless, configuration included.
       expect(await call(port, 'settings.describe', `127.0.0.1:${String(port)}`)).toBe(404)
     } finally {
       await close()

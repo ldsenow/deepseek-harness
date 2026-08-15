@@ -12,7 +12,8 @@ import {
   type ServerResponse as RpcServerResponse,
 } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { bridge, type FetchHandler } from './http-bridge.ts'
-import { isTrustedApiRequest } from './api-request-trust.ts'
+import { isTrustedApiRequest, type ApiTrustRequest } from './api-request-trust.ts'
+import { admitApiRequest } from './api-auth.ts'
 import { API_PATH } from './api-path.ts'
 import type {
   ConnectionRpcEndpointMatcher,
@@ -47,8 +48,13 @@ export class HostConnectionService extends Service implements HostConnectionHand
    * Provide the Host half over the active HTTP server.
    * @param ctx - owning Connection plugin context.
    * @param trustedHosts - deployment authorities accepted by trusted-host channels.
+   * @param pairingToken - pairing token trusted-host channels require beyond loopback; absent admits loopback only.
    */
-  constructor(ctx: Context, private readonly trustedHosts: readonly string[]) {
+  constructor(
+    ctx: Context,
+    private readonly trustedHosts: readonly string[],
+    private readonly pairingToken?: string,
+  ) {
     super(ctx, 'connection')
   }
 
@@ -94,13 +100,15 @@ export class HostConnectionService extends Service implements HostConnectionHand
     options: ConnectionRpcHandlerOptions,
   ): () => Promise<void> {
     assertChannel(channel)
-    const trustedHosts = options.authority === 'loopback' ? [] : this.trustedHosts
+    const admit = options.authority === 'loopback'
+      ? (req: ApiTrustRequest): boolean => isTrustedApiRequest(req, [])
+      : (req: ApiTrustRequest): boolean => admitApiRequest(req, this.trustedHosts, this.pairingToken)
     const fetchHandler = rpcFetchHandler(channel, handler)
     const route: WebRoute = {
       kind: 'prefix',
       path: channel,
       handler: async (req, res) => {
-        if (!isTrustedApiRequest(req, trustedHosts)) {
+        if (!admit(req)) {
           res.writeHead(403)
           res.end('forbidden')
           return
