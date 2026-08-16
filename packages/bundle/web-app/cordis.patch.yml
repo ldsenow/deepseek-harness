@@ -109,6 +109,16 @@
 
     # ── layer 2: transport/service ──────────────────────────────────────────────
 
+    # Optional host sleep inhibitor: `--keep-awake` holds the platform's own
+    # facility (caffeinate / systemd-inhibit / SetThreadExecutionState) for
+    # the process lifetime so idle sleep cannot cut off running sessions or
+    # paired LAN devices.
+    - id: web-keep-awake
+      name: '@deepseek-ai/dsh-web-app/keep-awake'
+      inject: [webStartup]
+      config:
+        enabled: !!js ctx.webStartup.keepAwake === true
+
     # TLS material for network serving: an all-interfaces bind gets a
     # persistent self-signed certificate (paths only; the key never enters a
     # config surface), a loopback bind provides no paths and stays plain HTTP.
