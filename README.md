@@ -34,6 +34,19 @@ pnpm run build
 pnpm dsh web
 ```
 
+## Remote access (LAN)
+
+By default `dsh web` serves only `127.0.0.1`. To use the Web UI from another device on your network — a phone, tablet, or second computer — serve on all interfaces behind a pairing token:
+
+```sh
+npx @deepseek-ai/dsh web --host 0.0.0.0 \
+  --pairing-token "$(node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))")"
+```
+
+The command prints a pairing URL like `https://<lan-ip>:3080/#auth=<token>` and serves over an auto-generated self-signed certificate. Open that link once on the other device — it accepts the certificate and stores the token — after which you reconnect by typing the bare `https://<lan-ip>:3080`. Add `--keep-awake` to stop the host machine from sleeping while it serves.
+
+The `/api` surface runs commands as the `dsh` process, so a pairing token is required for every non-loopback client; local (loopback) use and tunnels such as `adb reverse` or SSH stay tokenless. See the [Web UI guide](docs/user/guide/index.md#remote-access-lan).
+
 ## Community and support
 
 - Feel free to submit feedback or bug reports through [GitHub Discussions](https://github.com/deepseek-ai/deepseek-harness/discussions).
