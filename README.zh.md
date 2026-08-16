@@ -39,8 +39,8 @@ pnpm dsh web
 默认情况下 `dsh web` 只服务 `127.0.0.1`。若要从网络上的另一台设备——手机、平板或第二台电脑——使用 Web UI，请在配对 token 的保护下服务所有网络接口：
 
 ```sh
-npx @deepseek-ai/dsh web --host 0.0.0.0 \
-  --pairing-token "$(node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))")"
+export DSH_PAIRING_TOKEN="$(node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))")"
+npx @deepseek-ai/dsh web --host 0.0.0.0 --pairing-token-env DSH_PAIRING_TOKEN
 ```
 
 该命令会打印形如 `https://<lan-ip>:3080/#auth=<token>` 的配对 URL，并通过自动生成的自签名证书提供服务。在另一台设备上打开该链接一次——它会接受证书并存下 token——此后直接输入裸地址 `https://<lan-ip>:3080` 即可重连。加上 `--keep-awake` 可让宿主机在服务期间不进入睡眠。

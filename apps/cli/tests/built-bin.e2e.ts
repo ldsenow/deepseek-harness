@@ -345,7 +345,7 @@ describe.skipIf(!existsSync(dshBin))('dsh BUILT bin (node lib/bin.js, no tsx)', 
       })
       expect(wildcardHost.code).toBe(1)
       expect(wildcardHost.stdout).toBe('')
-      expect(wildcardHost.stderr).toContain('--host 0.0.0.0 exposes remote code execution to the network, so it requires --pairing-token')
+      expect(wildcardHost.stderr).toContain('--host 0.0.0.0 exposes remote code execution to the network, so it requires --pairing-token-env')
       expect(wildcardHost.stderr).not.toContain('dsh web: http://')
 
       const headlessHelp = await runBuiltBin(['--profile', 'headless', '--help'], {

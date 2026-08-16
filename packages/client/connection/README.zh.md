@@ -14,6 +14,8 @@ node 半侧在桥接或 upgrade 前守卫 `/api` 下的每个入口（`src/api-r
 
 回环判定读取 socket peer 地址（`req.socket.remoteAddress`），绝不读客户端可控的 `Host` 头：在全接口绑定上，任何能到达 socket 的客户端都可以声称 `Host: localhost`，因此基于头的豁免会绕过 token。上文的 Host 栅栏对每个请求仍然运行，但它本身不承担任何认证。
 
+回环的免 token 豁免假定的是同一台机器，而不是同一个用户：任何本地进程无论 uid 都能到达该 socket，因此在多用户宿主上，能访问回环端口就等同于能以本进程身份运行。同样的道理决定了部署要直接绑定网络，而不是置于反向代理之后——代理从回环发起连接，会使每个转发请求都成为回环 peer——也决定了 `X-Forwarded-*` 被忽略：请求头无法确立 peer 究竟是谁。
+
 浏览器经 URL fragment 配对：打开一次 `#auth=<token>` 链接会把 token 存入 localStorage、从地址栏剥去 fragment，并在每次启动把它重新发布为 `SameSite=Strict` cookie（https 上附加 `Secure`），浏览器随后会把它附加到 `/api` fetch 与 WebSocket upgrade 上。以 `authority: 'trusted-host'` 注册的专用通道要求同样的放行；`authority: 'loopback'` 通道与特权方法集即使调用方已认证也仍钉在回环 peer。
 
 ## `/api` WebSocket 下行

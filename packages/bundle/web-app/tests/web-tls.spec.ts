@@ -1,5 +1,5 @@
 /** TLS-material provider: generation, persistence across boots, and the loopback no-op. */
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -90,6 +90,22 @@ describe('web-tls provider', () => {
     writeFileSync(file, 'not a directory')
     const fiber = ctx.plugin({ inject: [...inject], apply }, new Config({ enabled: true, dir: join(file, 'nested') }))
     await expect(fiber).rejects.toThrow()
+  })
+
+  it('names the orphaned lock when a killed run left one behind', async () => {
+    // withFileLock never reclaims an existing lock, so a run killed
+    // mid-generation blocks every later network boot. The failure has to say
+    // which file to delete, or the deployment is stuck with a timeout message
+    // about a path the operator has no reason to connect to this row.
+    dir = join(mkdtempSync(join(tmpdir(), 'dsh-web-tls-')), 'material')
+    mkdirSync(dir, { recursive: true })
+    const certPath = join(dir, 'cert.pem')
+    writeFileSync(`${certPath}.lock`, '424242\n')
+    const ctx = new Context()
+    ctx.provide('webStartup', {})
+    const fiber = ctx.plugin({ inject: [...inject], apply }, new Config({ enabled: true, dir }))
+    await expect(fiber).rejects.toThrow(`remove ${certPath}.lock and retry`)
+    expect(existsSync(certPath)).toBe(false)
   })
 
   it('generates the material through a real Loader composition, gated on the invocation flag', async () => {

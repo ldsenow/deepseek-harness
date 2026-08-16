@@ -60,6 +60,30 @@ const CERT_KEY_SIZE = 2048
 const CERT_ALGORITHM = 'sha256'
 
 /**
+ * Write one fresh certificate and key pair, unless both already exist.
+ * @param certPath - destination of the PEM certificate.
+ * @param keyPath - destination of the PEM private key.
+ */
+async function generateMaterial(certPath: string, keyPath: string): Promise<void> {
+  if (existsSync(certPath) && existsSync(keyPath)) return
+  const pems = await generate([{ name: 'commonName', value: 'dsh' }], {
+    notAfterDate: new Date(Date.now() + CERT_VALIDITY_MS),
+    keySize: CERT_KEY_SIZE,
+    algorithm: CERT_ALGORITHM,
+    extensions: [{
+      name: 'subjectAltName',
+      altNames: [
+        { type: 2, value: 'localhost' },
+        { type: 7, ip: '127.0.0.1' },
+        ...lanIpv4Addresses().map(ip => ({ type: 7 as const, ip })),
+      ],
+    }],
+  })
+  await writeFileAtomic(keyPath, pems.private, { mode: 0o600, dirMode: 0o700 })
+  await writeFileAtomic(certPath, pems.cert, { mode: 0o644, dirMode: 0o700 })
+}
+
+/**
  * Provide the TLS paths, generating the self-signed material on first
  * network-serving boot. Generation or an unwritable directory rejects the
  * load: a composition that asked for TLS must never silently serve plaintext.
@@ -81,23 +105,17 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   // one paired with a key from the other, which fails only later at
   // https.createServer. The lock serializes them; the loser re-checks and
   // keeps the winner's material.
-  await withFileLock(certPath, async () => {
-    if (existsSync(certPath) && existsSync(keyPath)) return
-    const pems = await generate([{ name: 'commonName', value: 'dsh' }], {
-      notAfterDate: new Date(Date.now() + CERT_VALIDITY_MS),
-      keySize: CERT_KEY_SIZE,
-      algorithm: CERT_ALGORITHM,
-      extensions: [{
-        name: 'subjectAltName',
-        altNames: [
-          { type: 2, value: 'localhost' },
-          { type: 7, ip: '127.0.0.1' },
-          ...lanIpv4Addresses().map(ip => ({ type: 7 as const, ip })),
-        ],
-      }],
-    })
-    await writeFileAtomic(keyPath, pems.private, { mode: 0o600, dirMode: 0o700 })
-    await writeFileAtomic(certPath, pems.cert, { mode: 0o644, dirMode: 0o700 })
-  })
+  try {
+    await withFileLock(certPath, () => generateMaterial(certPath, keyPath))
+  } catch (error) {
+    // The lock is never reclaimed by a contender, so a boot killed mid-generation
+    // leaves one behind and every later network boot fails here until an
+    // operator removes it. Name the file, since the remedy is deleting it.
+    throw new Error(
+      `web-tls: could not generate the TLS material in ${config.dir}; `
+      + `if a previous run was killed mid-generation, remove ${certPath}.lock and retry`,
+      { cause: error },
+    )
+  }
   ctx.provide(WEB_TLS_SERVICE, { paths: { certPath, keyPath } } satisfies WebTlsValues)
 }

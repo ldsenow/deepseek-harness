@@ -13,10 +13,11 @@ Web GUI 的 `/api` 表面以宿主进程身份执行代码，因此 `dsh --profi
 认证是部署配置的**配对 token**，在栅栏已经所在之处强制执行（`dsh-client-connection` 的 `src/api-auth.ts`），LAN 服务再由 Web 组合包持有的**自签名 TLS** 包住：
 
 - **放行**：每个请求都要通过 Host 栅栏（`src/api-request-trust.ts`）——它是 DNS 重绑定与跨站防御。在其之外，`admitApiRequest`（`src/api-auth.ts`）要求每个非回环 socket peer 出示配对 token，以 `dsh_auth` cookie 或 `Authorization: Bearer` 出示，并在 sha256 摘要上恒定时间比较。专用 `trusted-host` RPC 通道走同一道放行。
-- **回环取自 socket peer，绝不取 `Host` 头**：只有真正的回环 peer（`req.socket.remoteAddress`、`isLoopbackAddress`）才免 token，因此本机进程与端口转发隧道（`adb reverse`、SSH）保持免 token。在全接口绑定上，任何能到达 socket 的客户端都可以声称 `Host: localhost`，因此基于头的豁免就是 token 绕过。node 层把 socket 推导出的事实盖到内部请求头上并覆盖客户端的副本，因此 Fetch 侧的检查同样无法被伪造。
+- **回环取自 socket peer，绝不取 `Host` 头**：只有真正的回环 peer（`req.socket.remoteAddress`、`isLoopbackAddress`）才免 token，因此本机进程与端口转发隧道（`adb reverse`、SSH）保持免 token。在全接口绑定上，任何能到达 socket 的客户端都可以声称 `Host: localhost`，因此基于头的豁免就是 token 绕过。node 层把 socket 推导出的事实作为带类型的 `RequestPeer` 参数与请求一并传给 Fetch 处理器，因此没有任何请求头承载信任，处理器也读不到这样的头。
 - **特权方法集与 `loopback` 权威通道** 即使对已认证调用方也仍钉在回环 peer：配对认证的是设备，配置面还额外要求人在机器旁。
 - **配对**：打印的 LAN 行就是配对 URL `https://<lan-ip>:<port>/#auth=<token>`（Jupyter 的模式）。浏览器半侧（`src/client/auth.ts`）把 fragment 收进 localStorage、从地址栏剥去，并在每次启动把它重新发布为 `SameSite=Strict` cookie，浏览器随后会把它附加到 fetch 与 WebSocket upgrade 上——不需要任何载体改动，fragment 也永远不会到达服务器或日志。
-- **组合期报错**：token 不匹配 `[A-Za-z0-9_-]{16,}`，或非空 `trustedHosts` 不配 token，都会让插件加载失败；CLI 上 `--host 0.0.0.0` 与 `--trusted-host` 不带 `--pairing-token` 是用法错误。
+- **token 以引用方式到达 CLI**：`--pairing-token-env <name>` 从指定的环境变量读取它，遵循 `dsh-credentials` 的原则——配置携带指向机密的引用，而不是机密本身。字面量形式 `--pairing-token <token>` 为方便起见保留，但进程的参数对机器上的每个用户可读，因此帮助文本与文档都以环境变量为先。
+- **组合期报错**：token 不匹配 `[A-Za-z0-9_-]{16,}`，或非空 `trustedHosts` 不配 token，都会让插件加载失败；CLI 上同时指定两种 token 形式、指定一个没有取值的变量，以及 `--host 0.0.0.0` 或 `--trusted-host` 完全不带 token，都是用法错误。
 - **TLS**：`dsh-host-webserver` 增加 `tlsCertPath`/`tlsKeyPath`（只传路径、绝不内联材料，回显配置的表面无法泄漏私钥），两者都设置时以 `node:https` 服务。`dsh-web-app/tls` 提供方在首次全接口启动时于 `dshHomePath('web-tls')` 下生成持久的自签名证书对——SAN 携带回环名加采样的 LAN 地址、十年有效期、密钥文件仅属主可读——设备一次性接受的例外因此在重启后仍然有效。回环绑定保持明文 HTTP。
 
 ## 考虑过的替代方案
@@ -29,7 +30,7 @@ Web GUI 的 `/api` 表面以宿主进程身份执行代码，因此 `dsh --profi
 
 ## 后果
 
-- `dsh --profile web --host 0.0.0.0 --pairing-token <token>` 是受支持的 LAN 部署；先前的硬拒绝已经移除，信任边界注记中暂缓的认证事项在本注记落地。
+- `dsh --profile web --host 0.0.0.0 --pairing-token-env <name>` 是受支持的 LAN 部署；先前的硬拒绝已经移除，信任边界注记中暂缓的认证事项在本注记落地。
 - 早于本决定的 `trustedHosts` 组合在补上 `pairingToken` 之前不再放行任何人——在加载期报错，而不是以沉默的 403 被发现。
 - 从未访问过配对链接、直接打开裸权威的设备暂时没有 token 输入界面；它会看到普通的重连状态（在 connection README 中记录为暂缓的客户端 UI 工作）。
 - 既有证书 SAN 里固化的 LAN IP 会随网络变化漂移；服务照常工作，只有浏览器警告会重新出现，因为放行从不依赖证书。

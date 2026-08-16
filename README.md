@@ -39,8 +39,8 @@ pnpm dsh web
 By default `dsh web` serves only `127.0.0.1`. To use the Web UI from another device on your network — a phone, tablet, or second computer — serve on all interfaces behind a pairing token:
 
 ```sh
-npx @deepseek-ai/dsh web --host 0.0.0.0 \
-  --pairing-token "$(node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))")"
+export DSH_PAIRING_TOKEN="$(node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))")"
+npx @deepseek-ai/dsh web --host 0.0.0.0 --pairing-token-env DSH_PAIRING_TOKEN
 ```
 
 The command prints a pairing URL like `https://<lan-ip>:3080/#auth=<token>` and serves over an auto-generated self-signed certificate. Open that link once on the other device — it accepts the certificate and stores the token — after which you reconnect by typing the bare `https://<lan-ip>:3080`. Add `--keep-awake` to stop the host machine from sleeping while it serves.

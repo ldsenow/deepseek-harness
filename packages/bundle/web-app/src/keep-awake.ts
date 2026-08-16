@@ -73,10 +73,15 @@ export function resolveInhibitor(platform: NodeJS.Platform): InhibitorCommand {
   }
 }
 
-/** Test hooks: substitute spawn and termination; production always uses the platform command and a group signal. */
+/**
+ * Test hooks: substitute spawn and termination; production always uses the
+ * platform command and a group signal. `terminateInhibitor` returns the signal
+ * failure when the child may still be holding the inhibitor, and `undefined`
+ * once the group is gone or on its way out.
+ */
 export const internals: {
   spawnInhibitor: (inhibitor: InhibitorCommand) => ChildProcess
-  terminateInhibitor: (child: ChildProcess) => void
+  terminateInhibitor: (child: ChildProcess) => NodeJS.ErrnoException | undefined
 } = {
   spawnInhibitor: inhibitor => spawn(inhibitor.command, inhibitor.args, {
     // Credential scrub per docs/defensive-patterns.md: the inhibitor needs no
@@ -98,16 +103,23 @@ export const internals: {
       // Negative pid signals the whole group, so `systemd-inhibit`'s own
       // `sleep` child dies with it instead of outliving teardown.
       else process.kill(-pid, 'SIGTERM')
-    } catch {
-      // ESRCH only: the group is already gone, which is the desired end state.
+    } catch (error) {
+      const failure = error as NodeJS.ErrnoException
+      // ESRCH means the group is already gone, which is the desired end state.
+      // Anything else — EPERM above all, which is what a pid recycled between
+      // the child's death and libuv observing it would raise — leaves a child
+      // that may still hold the inhibitor, so the caller hears about it.
+      return failure.code === 'ESRCH' ? undefined : failure
     }
+    return undefined
   },
 }
 
 /**
  * Hold the sleep inhibitor while this plugin lives. Activation resolves only
  * after the child has spawned; a spawn failure (missing platform binary)
- * rejects the load. Disposal kills the child and awaits its exit.
+ * rejects the load. Disposal signals the child and awaits its exit, or warns
+ * and returns when the signal itself failed.
  * @param ctx - plugin context.
  * @param config - validated {@link Config}.
  */
@@ -135,7 +147,13 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     // Settle on 'exit' alone: an 'error' must not reject teardown, and the
     // process is gone either way once one of them fires.
     const exited = new Promise<void>((resolve) => { child.once('exit', () => { resolve() }) })
-    internals.terminateInhibitor(child)
+    const failure = internals.terminateInhibitor(child)
+    if (failure !== undefined) {
+      // The signal never landed, so no 'exit' is coming and awaiting one would
+      // hang teardown. Name the process instead: it may still hold the lock.
+      ctx.logger.warn(`web-keep-awake: could not release the sleep inhibitor (${failure.message}); process ${String(child.pid)} may keep the host awake until it is killed`)
+      return
+    }
     await exited
   }, 'web-keep-awake: sleep inhibitor')
 }

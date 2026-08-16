@@ -22,11 +22,13 @@ interface Observed {
 }
 
 const disposers: (() => Promise<void>)[] = []
+const TOKEN_VAR = 'DSH_TEST_PAIRING_TOKEN'
 
 afterEach(async () => {
   for (const dispose of disposers.splice(0)) await dispose()
   internals.stdout = process.stdout
   internals.stderr = process.stderr
+  delete process.env.DSH_TEST_PAIRING_TOKEN
 })
 
 /**
@@ -137,7 +139,7 @@ describe('web command-line provider', () => {
 
   it('rejects the all-interfaces host without a pairing token before the consumer activates', async () => {
     const { values, observed } = await bootProvider(['--host', '0.0.0.0'])
-    expect(observed.out).toContain('--host 0.0.0.0 exposes remote code execution to the network, so it requires --pairing-token')
+    expect(observed.out).toContain('--host 0.0.0.0 exposes remote code execution to the network, so it requires --pairing-token-env')
     expect(values).toBeUndefined()
     expect(observed.readerConfig).toBeUndefined()
     expect(observed.exits).toEqual([1])
@@ -153,16 +155,56 @@ describe('web command-line provider', () => {
     expect(observed.exits).toEqual([])
   })
 
-  it('rejects a malformed pairing token before the consumer activates', async () => {
-    const { values, observed } = await bootProvider(['--pairing-token', 'short'])
-    expect(observed.out).toContain('--pairing-token must be at least 16 characters of A-Za-z0-9_-')
+  it('reads the token from the named variable, keeping it out of the argument list', async () => {
+    process.env[TOKEN_VAR] = 'startup-pairing-token_01'
+    const { values, observed } = await bootProvider(['--host', '0.0.0.0', '--pairing-token-env', TOKEN_VAR])
+    expect(values).toEqual({
+      host: '0.0.0.0',
+      trustedHosts: [],
+      pairingToken: 'startup-pairing-token_01',
+    })
+    expect(observed.exits).toEqual([])
+  })
+
+  it.each([
+    ['unset', undefined],
+    // An exported-but-empty variable is the shape a shell leaves behind when
+    // the generator that should have filled it failed; admitting it would
+    // serve the LAN with no token at all.
+    ['empty', ''],
+  ])('rejects a %s variable named by --pairing-token-env', async (_kind, value) => {
+    if (value !== undefined) process.env[TOKEN_VAR] = value
+    const { values, observed } = await bootProvider(['--host', '0.0.0.0', '--pairing-token-env', TOKEN_VAR])
+    expect(observed.out).toContain(`--pairing-token-env names "${TOKEN_VAR}", which is not set`)
+    expect(values).toBeUndefined()
+    expect(observed.exits).toEqual([1])
+  })
+
+  it('rejects both token forms at once rather than silently preferring one', async () => {
+    process.env[TOKEN_VAR] = 'startup-pairing-token_01'
+    const { values, observed } = await bootProvider([
+      '--pairing-token-env', TOKEN_VAR,
+      '--pairing-token', 'startup-pairing-token_02',
+    ])
+    expect(observed.out).toContain('pass either --pairing-token-env or --pairing-token, not both')
+    expect(values).toBeUndefined()
+    expect(observed.exits).toEqual([1])
+  })
+
+  it.each([
+    ['the literal flag', ['--pairing-token', 'short'], undefined],
+    ['a referenced variable', ['--pairing-token-env', TOKEN_VAR], 'short'],
+  ])('rejects a malformed pairing token from %s', async (_kind, args, envValue) => {
+    if (envValue !== undefined) process.env[TOKEN_VAR] = envValue
+    const { values, observed } = await bootProvider(args)
+    expect(observed.out).toContain('the pairing token must be at least 16 characters of A-Za-z0-9_-')
     expect(values).toBeUndefined()
     expect(observed.exits).toEqual([1])
   })
 
   it('rejects trusted authorities without a pairing token before the consumer activates', async () => {
     const { values, observed } = await bootProvider(['--trusted-host', 'lab.internal'])
-    expect(observed.out).toContain('--trusted-host requires --pairing-token')
+    expect(observed.out).toContain('--trusted-host requires a pairing token')
     expect(values).toBeUndefined()
     expect(observed.exits).toEqual([1])
   })

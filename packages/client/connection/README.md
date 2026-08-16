@@ -14,6 +14,8 @@ A request from a non-loopback peer is admitted only when the deployment configur
 
 Loopback is read from the socket peer address (`req.socket.remoteAddress`), never the client-controlled `Host` header: on an all-interfaces bind any client reaching the socket can claim `Host: localhost`, so a header-based exemption would bypass the token. The Host fence above still runs for every request but authenticates nothing by itself.
 
+The tokenless loopback exemption assumes the machine, not the user: any local process reaches the socket whatever its uid, so on a shared host access to the loopback port is equivalent to running as this process. The same reading is why a deployment binds the network directly instead of sitting behind a reverse proxy — a proxy connects from loopback, which would make every forwarded request a loopback peer — and why `X-Forwarded-*` is ignored, a header being unable to establish who the peer is.
+
 The browser pairs through the URL fragment: opening a `#auth=<token>` link once stores the token in localStorage, strips the fragment from the address bar, and republishes it each boot as a `SameSite=Strict` cookie (`Secure` on https), which the browser attaches to `/api` fetches and WebSocket upgrades alike. Dedicated `authority: 'trusted-host'` channels require the same admission; `authority: 'loopback'` channels and the privileged method set stay pinned to a loopback peer even for an authenticated caller.
 
 ## `/api` WebSocket downlinks

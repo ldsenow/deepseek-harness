@@ -16,9 +16,10 @@ const originalTerminate = internals.terminateInhibitor
 /** Restored after a test forces `process.platform` to exercise the Windows path. */
 const PLATFORM = process.platform
 
-/** Fakes carry no real pid, so termination routes to the fake's own kill. */
-function terminateFake(child: ChildProcess): void {
+/** Fakes carry no real pid, so termination routes to the fake's own kill, which always lands. */
+function terminateFake(child: ChildProcess): undefined {
   child.kill()
+  return undefined
 }
 
 afterEach(() => {
@@ -83,7 +84,7 @@ describe('terminateInhibitor', () => {
     // hit this process's own group, so termination must be a no-op instead.
     const fake = new FakeInhibitor()
     const groupSignals = vi.spyOn(process, 'kill').mockImplementation(() => true)
-    originalTerminate(asChild(fake))
+    expect(originalTerminate(asChild(fake))).toBeUndefined()
     expect(fake.killed).toBe(false)
     expect(groupSignals).not.toHaveBeenCalled()
   })
@@ -102,12 +103,22 @@ describe('terminateInhibitor', () => {
     expect(groupSignals).not.toHaveBeenCalled()
   })
 
-  it('swallows a signal against an already-dead group', () => {
+  it.each([
+    // ESRCH is the desired end state reported as a failure: nothing left to signal.
+    ['ESRCH', undefined],
+    // EPERM is what signalling a group this process does not own looks like —
+    // a pid recycled between the child's death and libuv observing it. The
+    // caller must hear about it: something may still hold the inhibitor.
+    ['EPERM', 'EPERM'],
+  ])('reports a %s signal failure as %s', (code, reported) => {
     const fake = new FakeInhibitor()
     fake.pid = 4242
-    fake.kill = () => { throw new Error('kill ESRCH') }
-    vi.spyOn(process, 'kill').mockImplementation(() => { throw new Error('kill ESRCH') })
-    expect(() => { originalTerminate(asChild(fake)) }).not.toThrow()
+    const failure = Object.assign(new Error(`kill ${code}`), { code })
+    // Raised from whichever call this platform makes, so the assertion holds
+    // on POSIX and Windows alike.
+    fake.kill = () => { throw failure }
+    vi.spyOn(process, 'kill').mockImplementation(() => { throw failure })
+    expect(originalTerminate(asChild(fake))?.code).toBe(reported)
   })
 })
 
@@ -184,6 +195,7 @@ describe('web-keep-awake plugin', () => {
     internals.terminateInhibitor = (child) => {
       child.emit('error', new Error('kill ESRCH'))
       terminateFake(child)
+      return undefined
     }
     const warn = vi.fn()
     const ctx = new Context()
@@ -193,6 +205,24 @@ describe('web-keep-awake plugin', () => {
     await fiber.dispose()
     expect(fake.killed).toBe(true)
     expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('reports a signal that never landed instead of waiting forever for an exit', async () => {
+    // The child outlives a failed signal, so no 'exit' is coming; teardown must
+    // complete and name the process that may still hold the inhibitor.
+    const fake = new FakeInhibitor()
+    fake.pid = 4242
+    internals.spawnInhibitor = () => asChild(fake.spawnOk())
+    internals.terminateInhibitor = () => Object.assign(new Error('kill EPERM'), { code: 'EPERM' })
+    const warn = vi.fn()
+    const ctx = new Context()
+    Object.defineProperty(ctx, 'logger', { value: { warn }, configurable: true })
+    const fiber = ctx.plugin({ inject: [...inject], apply }, new Config({ enabled: true }))
+    await fiber.await()
+    await fiber.dispose()
+    expect(fake.killed).toBe(false)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not release the sleep inhibitor (kill EPERM)'))
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('process 4242'))
   })
 
   it('rejects activation when the inhibitor cannot start', async () => {
