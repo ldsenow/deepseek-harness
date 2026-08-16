@@ -12,7 +12,9 @@ Web GUI 的 `/api` 表面以宿主进程身份执行代码，因此 `dsh --profi
 
 认证是部署配置的**配对 token**，在栅栏已经所在之处强制执行（`dsh-client-connection` 的 `src/api-auth.ts`），LAN 服务再由 Web 组合包持有的**自签名 TLS** 包住：
 
-- **放行**：Host 栅栏（`src/api-request-trust.ts`）作为 DNS 重绑定/跨站防御对每个请求都运行，随后 `admitApiRequest`（`src/api-auth.ts`）对每个非回环 **socket peer** 都要求配对 token——以 `dsh_auth` cookie 或 `Authorization: Bearer` 出示，在 sha256 摘要上恒定时间比较。免 token 豁免只授予真正的回环 peer（`req.socket.remoteAddress`，`isLoopbackAddress`），绝不基于看起来像回环的 `Host`——在全接口绑定上该头可被任何能到达 socket 的客户端伪造，因此基于头的豁免就是 token 绕过（[回环 peer 修复注记](../bug-fix/2026-08-16-loopback-peer-not-host-header.md)）。本机进程（以及从 PC 上 `127.0.0.1` 连入的 `adb reverse`/SSH 隧道）保持免 token。专用 `trusted-host` RPC 通道走同一道放行；`loopback` 权威通道与特权方法集即使调用方已认证也仍钉在回环 socket peer——配对认证的是设备，配置面还额外要求人在机器旁。node 层把 socket 推导出的回环事实盖到内部请求头上，供 Fetch 侧钉住检查以不可伪造的方式读取。
+- **放行**：每个请求都要通过 Host 栅栏（`src/api-request-trust.ts`）——它是 DNS 重绑定与跨站防御。在其之外，`admitApiRequest`（`src/api-auth.ts`）要求每个非回环 socket peer 出示配对 token，以 `dsh_auth` cookie 或 `Authorization: Bearer` 出示，并在 sha256 摘要上恒定时间比较。专用 `trusted-host` RPC 通道走同一道放行。
+- **回环取自 socket peer，绝不取 `Host` 头**：只有真正的回环 peer（`req.socket.remoteAddress`、`isLoopbackAddress`）才免 token，因此本机进程与端口转发隧道（`adb reverse`、SSH）保持免 token。在全接口绑定上，任何能到达 socket 的客户端都可以声称 `Host: localhost`，因此基于头的豁免就是 token 绕过。node 层把 socket 推导出的事实盖到内部请求头上并覆盖客户端的副本，因此 Fetch 侧的检查同样无法被伪造。
+- **特权方法集与 `loopback` 权威通道** 即使对已认证调用方也仍钉在回环 peer：配对认证的是设备，配置面还额外要求人在机器旁。
 - **配对**：打印的 LAN 行就是配对 URL `https://<lan-ip>:<port>/#auth=<token>`（Jupyter 的模式）。浏览器半侧（`src/client/auth.ts`）把 fragment 收进 localStorage、从地址栏剥去，并在每次启动把它重新发布为 `SameSite=Strict` cookie，浏览器随后会把它附加到 fetch 与 WebSocket upgrade 上——不需要任何载体改动，fragment 也永远不会到达服务器或日志。
 - **组合期报错**：token 不匹配 `[A-Za-z0-9_-]{16,}`，或非空 `trustedHosts` 不配 token，都会让插件加载失败；CLI 上 `--host 0.0.0.0` 与 `--trusted-host` 不带 `--pairing-token` 是用法错误。
 - **TLS**：`dsh-host-webserver` 增加 `tlsCertPath`/`tlsKeyPath`（只传路径、绝不内联材料，回显配置的表面无法泄漏私钥），两者都设置时以 `node:https` 服务。`dsh-web-app/tls` 提供方在首次全接口启动时于 `dshHomePath('web-tls')` 下生成持久的自签名证书对——SAN 携带回环名加采样的 LAN 地址、十年有效期、密钥文件仅属主可读——设备一次性接受的例外因此在重启后仍然有效。回环绑定保持明文 HTTP。
