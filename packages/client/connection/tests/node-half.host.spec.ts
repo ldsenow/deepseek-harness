@@ -200,8 +200,7 @@ describe('connection node half', () => {
       // reconnaissance, and copy/remove/openDocument manage the roster and
       // drive the host desktop.
       'agentPreset.read', 'agentPreset.copy', 'agentPreset.openDocument', 'agentPreset.remove',
-      // The Gateway's slash form shares the pin's namespace: the live Loader
-      // roster is the same composition reconnaissance as agentPreset.read.
+      // The Gateway's slash form shares the pin's namespace.
       'pluginInventory/list',
     ]) {
       const denied = fakeResponse()
@@ -224,11 +223,8 @@ describe('connection node half', () => {
   })
 
   it('pins a privileged endpoint an interceptor claims, so the pin does not depend on routing order', async () => {
-    // The Gateway registers a `trusted-host` interceptor that claims every
-    // `namespace/method` endpoint, and a claimed endpoint never reaches the
-    // fallback. Enforcing the pin inside the fallback would therefore let any
-    // privileged endpoint escape it simply by being claimed; the pin runs ahead
-    // of the choice between the two handlers so that cannot happen.
+    // A claimed endpoint never reaches the fallback, so a pin enforced there
+    // would be escapable by an interceptor claiming the endpoint.
     const ctx = new Context()
     const routes: WebRoute[] = []
     ctx.provide('webServer', fakeHttpServer(routes, []) as WebServer)
@@ -260,9 +256,7 @@ describe('connection node half', () => {
     // Denial happens before dispatch, so the claimed handler never ran.
     expect(reached).toEqual([])
 
-    // An unprivileged claimed endpoint still reaches the same interceptor from
-    // that authenticated remote peer: the pin denies one endpoint, not the
-    // channel.
+    // The pin denies one endpoint, not the channel.
     const allowed = fakeResponse()
     await route.handler(
       fakePost(authed({ host: 'harness.example' }), '/api/goals/create', requestFor('goals/create'), LAN_PEER),
@@ -271,7 +265,6 @@ describe('connection node half', () => {
     expect(allowed.state.status).not.toBe(403)
     expect(reached).toEqual(['goals/create'])
 
-    // And the pinned endpoint is reachable from the machine itself.
     const local = fakeResponse()
     await route.handler(
       fakePost({ host: '127.0.0.1:3080' }, '/api/pluginInventory/list', requestFor('pluginInventory/list')),

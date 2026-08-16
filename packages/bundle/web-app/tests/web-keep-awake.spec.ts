@@ -104,18 +104,13 @@ describe('terminateInhibitor', () => {
   })
 
   it.each([
-    // ESRCH is the desired end state reported as a failure: nothing left to signal.
     ['ESRCH', undefined],
-    // EPERM is what signalling a group this process does not own looks like —
-    // a pid recycled between the child's death and libuv observing it. The
-    // caller must hear about it: something may still hold the inhibitor.
     ['EPERM', 'EPERM'],
   ])('reports a %s signal failure as %s', (code, reported) => {
     const fake = new FakeInhibitor()
     fake.pid = 4242
     const failure = Object.assign(new Error(`kill ${code}`), { code })
-    // Raised from whichever call this platform makes, so the assertion holds
-    // on POSIX and Windows alike.
+    // Both call sites throw, so the assertion holds on POSIX and Windows alike.
     fake.kill = () => { throw failure }
     vi.spyOn(process, 'kill').mockImplementation(() => { throw failure })
     expect(originalTerminate(asChild(fake))?.code).toBe(reported)
@@ -168,9 +163,7 @@ describe('web-keep-awake plugin', () => {
   })
 
   it('survives an inhibitor error after spawn instead of crashing the process', async () => {
-    // `events.once(child, 'spawn')` drops its own temporary 'error' handler on
-    // resolve; without a durable replacement this emit would be an unhandled
-    // 'error' and take the process down.
+    // Without a durable listener this emit is an unhandled 'error'.
     const fake = new FakeInhibitor()
     internals.spawnInhibitor = () => asChild(fake.spawnOk())
     internals.terminateInhibitor = terminateFake
@@ -187,9 +180,7 @@ describe('web-keep-awake plugin', () => {
   })
 
   it('stays silent about an error raised by teardown itself', async () => {
-    // Signalling a child that is already exiting can surface an 'error'; that
-    // is the disposal this plugin asked for, not a lost inhibitor, so it must
-    // neither warn nor throw.
+    // An 'error' raised by teardown itself is not a lost inhibitor.
     const fake = new FakeInhibitor()
     internals.spawnInhibitor = () => asChild(fake.spawnOk())
     internals.terminateInhibitor = (child) => {
@@ -208,8 +199,7 @@ describe('web-keep-awake plugin', () => {
   })
 
   it('reports a signal that never landed instead of waiting forever for an exit', async () => {
-    // The child outlives a failed signal, so no 'exit' is coming; teardown must
-    // complete and name the process that may still hold the inhibitor.
+    // No 'exit' follows a failed signal, so teardown must not await one.
     const fake = new FakeInhibitor()
     fake.pid = 4242
     internals.spawnInhibitor = () => asChild(fake.spawnOk())

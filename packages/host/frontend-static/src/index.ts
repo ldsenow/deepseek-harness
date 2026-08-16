@@ -69,9 +69,8 @@ export async function serveStatic(
     return
   }
   const serveIndex = async (): Promise<void> => {
-    // One nonce per document: the taps stamp it on the scripts they inject, and
-    // the policy admits exactly those. Reusing a nonce across responses would
-    // let an injection that once observed it stay executable.
+    // Fresh per document: a reused nonce keeps working for an injection that
+    // once observed it.
     const nonce = randomBytes(16).toString('base64')
     const body = await renderIndex(nonce)
     res.writeHead(200, {
@@ -88,12 +87,9 @@ export async function serveStatic(
   }
   let resolved: string
   try {
-    // The check above is lexical, and path resolution does not follow links: a
-    // symlink inside the dist root pointing outside it passes as an ordinary
-    // subpath, and reading it would serve any file this process can open. Ask
-    // the filesystem where the path really leads and re-check containment.
-    // `distRoot` is itself already link-free (see apply), so the two sides of
-    // the comparison are both real paths.
+    // `resolve` normalizes `..` but does not follow links, so a symlink out of
+    // the dist passes the lexical check above. `distRoot` is link-free (see
+    // apply), so both sides of the recheck are real paths.
     resolved = await realpath(target)
   } catch {
     // The target does not exist; SPA routing owns every miss.
@@ -107,8 +103,7 @@ export async function serveStatic(
   }
   try {
     const body = await readFile(resolved)
-    // Extension of the request path, not of the link destination: what the
-    // dist publishes under a name is what that name means to the client.
+    // `target`, not `resolved`: a link's own name decides its type.
     res.writeHead(200, {
       'content-type': MIME[extname(target)] ?? 'application/octet-stream',
       'x-content-type-options': 'nosniff',
@@ -122,30 +117,12 @@ export async function serveStatic(
 }
 
 /**
- * The Content-Security-Policy every index response carries. It is the last
- * line of defence for this origin, which matters more than usual on two
- * counts: the page holds the pairing token, and on the host machine it is
- * itself a loopback peer, so script running here reaches the configuration
- * plane a paired remote device is denied. The harness also serves third-party
- * client plugin bundles into this origin by design, so "only our own code
- * runs here" is a property the policy has to state rather than assume.
- *
- * Each directive earns its value:
- * - `script-src 'self' 'nonce-…'` admits the dist bundles and the two scripts
- *   the index taps inject, and nothing else — an injected `<script>` or event
- *   handler cannot execute. `'unsafe-eval'` is required, not incidental: the
- *   client code runner evaluates model-authored code with `new Function`, and
- *   that capability is the product, so the policy admits it and relies on the
- *   nonce to keep attacker markup from reaching it.
- * - `style-src` allows inline: shiki and KaTeX emit `style` attributes, which
- *   no nonce can cover.
- * - `img-src` allows remote http(s) because markdown renders remote images,
- *   plus `data:`/`blob:` for attachments the client materializes itself.
- * - `connect-src 'self'` keeps fetches and the WebSocket downlinks on this
- *   origin, which is what closes the exfiltration path images leave open.
- * - `object-src`, `base-uri`, `frame-ancestors`, and `form-action` are shut:
- *   this page embeds no plugins, rebases no URLs, is framed by nobody, and
- *   submits no forms.
+ * The Content-Security-Policy every index response carries; what it defends
+ * and why is in the package README. Three relaxations are load-bearing and
+ * must not be tightened without replacing what depends on them: `'unsafe-eval'`
+ * for the client code runner's `new Function`, inline `style-src` for the
+ * `style` attributes shiki and KaTeX emit, and remote `img-src` for the images
+ * markdown renders.
  * @param nonce - this response's script nonce.
  * @returns the policy header value.
  */
@@ -180,10 +157,8 @@ function within(candidate: string, root: string): boolean {
  * @param config - validated {@link Config}.
  */
 export function apply(ctx: Context, config: Config): void {
-  // Resolve links once, at load: every later containment check compares real
-  // paths against a real root, so a dist reached through a symlinked parent
-  // (a pnpm store, a monorepo link) is not mistaken for an escape. A missing
-  // dist fails the load here instead of answering the first request.
+  // Once, at load: a dist behind a symlinked parent (pnpm store, monorepo
+  // link) would otherwise read as an escape on every request.
   const distIndex = realpathSync(config.distIndex)
   const distRoot = dirname(distIndex)
   const renderIndex = async (nonce: string): Promise<string> =>

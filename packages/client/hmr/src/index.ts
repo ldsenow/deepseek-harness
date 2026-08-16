@@ -175,11 +175,9 @@ export function apply(ctx: Context, config: Config): void {
           res.end()
           return
         }
-        // The reload chain serves the machine doing the rebuilding, so it is
-        // held to a loopback peer. This channel carries no admission of its
-        // own, and on a network bind an unauthenticated caller could otherwise
-        // hold sockets open here without limit — each connection lives until
-        // its client closes it, and nothing caps how many exist.
+        // No admission of its own, and connections are uncapped and live
+        // until their client closes: on a network bind that is a socket sink.
+        // The watcher that feeds this channel runs on this machine anyway.
         if (!isLoopbackAddress(req.socket.remoteAddress)) {
           res.writeHead(403)
           res.end()

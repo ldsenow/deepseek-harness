@@ -97,20 +97,16 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   }
   const certPath = join(config.dir, 'cert.pem')
   const keyPath = join(config.dir, 'key.pem')
-  // Owner-only on POSIX so the private key's directory is not world-traversable
-  // on a shared host; Windows ACLs ignore mode, matching other dsh-home dirs.
-  // Created before the lock because the lock is a sibling inside it.
+  // Owner-only so the key's directory is not world-traversable on a shared
+  // host. Before the lock, which is a sibling inside it.
   mkdirSync(config.dir, { recursive: true, mode: 0o700 })
-  // Two first boots would otherwise interleave and leave a certificate from
-  // one paired with a key from the other, which fails only later at
-  // https.createServer. The lock serializes them; the loser re-checks and
-  // keeps the winner's material.
+  // Unserialized first boots interleave into a cert from one run paired with
+  // a key from the other, which fails only later at https.createServer.
   try {
     await withFileLock(certPath, () => generateMaterial(certPath, keyPath))
   } catch (error) {
-    // The lock is never reclaimed by a contender, so a boot killed mid-generation
-    // leaves one behind and every later network boot fails here until an
-    // operator removes it. Name the file, since the remedy is deleting it.
+    // No contender reclaims the lock, so a boot killed mid-generation blocks
+    // every later one until an operator deletes the file this names.
     throw new Error(
       `web-tls: could not generate the TLS material in ${config.dir}; `
       + `if a previous run was killed mid-generation, remove ${certPath}.lock and retry`,

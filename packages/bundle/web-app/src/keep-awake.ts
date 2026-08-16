@@ -84,15 +84,11 @@ export const internals: {
   terminateInhibitor: (child: ChildProcess) => NodeJS.ErrnoException | undefined
 } = {
   spawnInhibitor: inhibitor => spawn(inhibitor.command, inhibitor.args, {
-    // Credential scrub per docs/defensive-patterns.md: the inhibitor needs no
-    // harness environment, and stdio stays detached from the URL-line stdout.
     env: scrubbedParentEnv(),
+    // Detached from stdout, which carries the URL readiness line.
     stdio: 'ignore',
-    // POSIX: lead a new process group so teardown reaches the whole tree.
-    // `systemd-inhibit` runs its own child (`sleep infinity`) and does not
-    // forward signals, so killing only the direct child would leave that
-    // grandchild running — disposal must reach quiescence, not just request
-    // it. Windows has no process groups here; its holder spawns no child.
+    // POSIX group leader: `systemd-inhibit` forwards no signal to its own
+    // `sleep` child, so signalling only the direct child orphans that one.
     detached: process.platform !== 'win32',
   }),
   terminateInhibitor: (child) => {
@@ -100,15 +96,11 @@ export const internals: {
     if (pid === undefined) return
     try {
       if (process.platform === 'win32') child.kill()
-      // Negative pid signals the whole group, so `systemd-inhibit`'s own
-      // `sleep` child dies with it instead of outliving teardown.
       else process.kill(-pid, 'SIGTERM')
     } catch (error) {
       const failure = error as NodeJS.ErrnoException
-      // ESRCH means the group is already gone, which is the desired end state.
-      // Anything else — EPERM above all, which is what a pid recycled between
-      // the child's death and libuv observing it would raise — leaves a child
-      // that may still hold the inhibitor, so the caller hears about it.
+      // ESRCH is the wanted end state. Anything else (EPERM from a recycled
+      // pid's group) leaves a child that may still hold the inhibitor.
       return failure.code === 'ESRCH' ? undefined : failure
     }
     return undefined
@@ -129,10 +121,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   // 'error' before 'spawn' (ENOENT and friends) rejects activation loudly.
   await once(child, 'spawn')
   let disposed = false
-  // `events.once` above removed its own temporary 'error' handler on resolve.
-  // A ChildProcess with no 'error' listener throws on the next one, which
-  // would take the whole dsh process down for a failure this plugin is
-  // required to survive, so the listener is durable from here on.
+  // `events.once` dropped its temporary 'error' handler on resolve, and a
+  // ChildProcess with none throws on the next one, killing the dsh process.
   child.on('error', (error) => {
     if (disposed) return
     ctx.logger.warn(`web-keep-awake: sleep inhibitor failed (${error.message}); the host may sleep again`)
@@ -144,13 +134,11 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.effect(() => async () => {
     disposed = true
     if (child.exitCode !== null || child.signalCode !== null) return
-    // Settle on 'exit' alone: an 'error' must not reject teardown, and the
-    // process is gone either way once one of them fires.
+    // 'exit' alone: an 'error' here must not reject teardown.
     const exited = new Promise<void>((resolve) => { child.once('exit', () => { resolve() }) })
     const failure = internals.terminateInhibitor(child)
     if (failure !== undefined) {
-      // The signal never landed, so no 'exit' is coming and awaiting one would
-      // hang teardown. Name the process instead: it may still hold the lock.
+      // No 'exit' is coming, so awaiting one would hang teardown.
       ctx.logger.warn(`web-keep-awake: could not release the sleep inhibitor (${failure.message}); process ${String(child.pid)} may keep the host awake until it is killed`)
       return
     }

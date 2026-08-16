@@ -136,10 +136,8 @@ const PRIVILEGED_METHODS = new Set([
   'credentials.set',
   'credentials.unset',
   'llm.discoverModels',
-  // The live Loader roster names every plugin this deployment runs, which is
-  // the same reconnaissance `agentPreset.read` is pinned for — a composition
-  // read, one level up. Its settings tab is loopback-only in consequence,
-  // matching the rest of the configuration plane it sits in.
+  // The live Loader roster is the same composition reconnaissance
+  // `agentPreset.read` is pinned for; its settings tab is loopback-only too.
   'pluginInventory/list',
 ])
 

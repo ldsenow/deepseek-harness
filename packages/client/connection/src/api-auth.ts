@@ -1,19 +1,9 @@
 /**
- * Pairing-token authentication for the /api request family. The browser-trust
- * fence ([api-request-trust](./api-request-trust.ts)) decides only which
- * authority a request's `Host` addressed (DNS-rebinding and cross-site
- * defense); this module decides whether a network caller may act at all. A
- * request from a non-loopback peer is admitted only when the deployment
- * configured a pairing token and the request presents it — as the `dsh_auth`
- * cookie the browser client sets after pairing (sent on fetches and WebSocket
- * upgrades alike), or an `Authorization: Bearer` header for non-browser
- * clients. Only a genuine loopback peer skips the token: a local process
- * already owns the machine this server executes on. Loopback comes from the
- * socket peer address (`isLoopbackAddress`, [dsh-loopback](../../../util/loopback/README.md)), never the
- * client-controlled `Host` header — on an all-interfaces bind any client that
- * can reach the socket may claim `Host: localhost`, so a header-based
- * exemption would be a token bypass. Comparison is constant-time over digests,
- * so neither token length nor a matching prefix leaks through timing.
+ * Pairing-token authentication for the /api request family: the fence in
+ * [api-request-trust](./api-request-trust.ts) decides which authority a `Host`
+ * addressed, this module decides whether a caller may act at all. The package
+ * README carries the trust model; the trap it exists to avoid is deriving the
+ * loopback exemption from `Host`, which any client reaching the socket forges.
  */
 
 import { createHash, timingSafeEqual } from 'node:crypto'
