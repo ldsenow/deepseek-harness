@@ -59,6 +59,7 @@ export const apply = ctx => globalThis.__webStartupApply(ctx)
     '    port: !!js ctx.webStartup.port ?? 3080',
     '    trustedHosts: !!js ctx.webStartup.trustedHosts',
     '    pairingToken: !!js ctx.webStartup.pairingToken',
+    '    keepAwake: !!js ctx.webStartup.keepAwake',
     '- id: provider',
     `  name: ${pathToFileURL(join(dir, 'provider.mjs')).href}`,
     '',
@@ -94,12 +95,14 @@ describe('web command-line provider', () => {
       '--trusted-host', 'lab.internal', 'lab-2.internal',
       '--trusted-host', '10.0.0.9',
       '--pairing-token', 'startup-pairing-token_01',
+      '--keep-awake',
     ])
     expect(values).toEqual({
       host: '127.0.0.1',
       port: 8080,
       trustedHosts: ['lab.internal', 'lab-2.internal', '10.0.0.9'],
       pairingToken: 'startup-pairing-token_01',
+      keepAwake: true,
     })
     expect(observed.readerConfig).toEqual(values)
     expect(observed.exits).toEqual([])

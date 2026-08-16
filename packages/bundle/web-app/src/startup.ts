@@ -1,7 +1,7 @@
 /**
  * The web app's command-line provider: it parses the `dsh --profile web` flag
- * family (`--host`, `--port`, `--trusted-host`, `--pairing-token`) and its
- * `--help` text, then provides the immutable values as
+ * family (`--host`, `--port`, `--trusted-host`, `--pairing-token`,
+ * `--keep-awake`) and its `--help` text, then provides the immutable values as
  * {@link WEB_STARTUP_SERVICE}. Ordinary rows inject that service before
  * reading it from lazy config.
  * @module @deepseek-ai/dsh-web-app/startup
@@ -31,6 +31,8 @@ export interface WebStartupValues {
   trustedHosts: string[]
   /** `--pairing-token`, absent when the invocation did not name one. */
   pairingToken?: string
+  /** `--keep-awake`, absent when the invocation did not name it. */
+  keepAwake?: boolean
 }
 
 /** The web flag family, as commander parsed it. */
@@ -39,6 +41,7 @@ interface WebOptions {
   port?: string
   trustedHost?: string[]
   pairingToken?: string
+  keepAwake?: boolean
 }
 
 /**
@@ -54,6 +57,7 @@ function webCommand(): Command {
     .option('--port <port>', 'listen port; pass 0 to let the OS pick a free one')
     .option('--trusted-host <authority...>', 'extra authority the /api browser-trust fence accepts (host or host:port; repeatable; requires --pairing-token)')
     .option('--pairing-token <token>', 'pairing token every non-loopback client must present (16+ characters of A-Za-z0-9_-)')
+    .option('--keep-awake', 'hold the platform sleep inhibitor while dsh serves, so idle sleep cannot cut off sessions or paired devices')
     .addHelpText('after', `
 Examples:
   dsh --profile web                          serve on the composed host and port
@@ -96,6 +100,7 @@ export function apply(ctx: Context): void {
       ...options.port !== undefined && { port: Number(options.port) },
       trustedHosts: options.trustedHost ?? [],
       ...options.pairingToken !== undefined && { pairingToken: options.pairingToken },
+      ...options.keepAwake === true && { keepAwake: true },
     } satisfies WebStartupValues)
   })
   parseCmdline(ctx, program)
