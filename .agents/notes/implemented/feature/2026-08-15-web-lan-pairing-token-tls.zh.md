@@ -14,7 +14,7 @@ Web GUI 的 `/api` 表面以宿主进程身份执行代码，因此 `dsh --profi
 
 - **放行**：每个请求都要通过 Host 栅栏（`src/api-request-trust.ts`）——它是 DNS 重绑定与跨站防御。在其之外，`admitApiRequest`（`src/api-auth.ts`）要求每个非回环 socket peer 出示配对 token，以 `dsh_auth` cookie 或 `Authorization: Bearer` 出示，并在 sha256 摘要上恒定时间比较。专用 `trusted-host` RPC 通道走同一道放行。
 - **回环取自 socket peer，绝不取 `Host` 头**：只有真正的回环 peer（`req.socket.remoteAddress`、`isLoopbackAddress`）才免 token，因此本机进程与端口转发隧道（`adb reverse`、SSH）保持免 token。在全接口绑定上，任何能到达 socket 的客户端都可以声称 `Host: localhost`，因此基于头的豁免就是 token 绕过。node 层把 socket 推导出的事实作为带类型的 `RequestPeer` 参数与请求一并传给 Fetch 处理器，因此没有任何请求头承载信任，处理器也读不到这样的头。
-- **特权方法集与 `loopback` 权威通道** 即使对已认证调用方也仍钉在回环 peer：配对认证的是设备，配置面还额外要求人在机器旁。
+- **特权端点集与 `loopback` 权威通道** 即使对已认证调用方也仍钉在回环 peer：配对认证的是设备，配置面还额外要求人在机器旁。该集合覆盖 `/api` 承载的两种端点形式——API Proxy 的点号形式方法，以及 Typert 网关的 `namespace/method` 斜杠形式，其中 `pluginInventory/list` 被钉定，理由与 `agentPreset.read` 同为组装侦察——并且钉定运行在每个 `/api` 端点都会经过的那一个点上，位于网关拦截器与 API Proxy 回退之间的抉择之前。只在回退里施加它会让钉定取决于路由顺序，因为网关先认领自己的端点，而被认领的端点根本不会到达回退。
 - **配对**：打印的 LAN 行就是配对 URL `https://<lan-ip>:<port>/#auth=<token>`（Jupyter 的模式）。浏览器半侧（`src/client/auth.ts`）把 fragment 收进 localStorage、从地址栏剥去，并在每次启动把它重新发布为 `SameSite=Strict` cookie，浏览器随后会把它附加到 fetch 与 WebSocket upgrade 上——不需要任何载体改动，fragment 也永远不会到达服务器或日志。
 - **token 以引用方式到达 CLI**：`--pairing-token-env <name>` 从指定的环境变量读取它，遵循 `dsh-credentials` 的原则——配置携带指向机密的引用，而不是机密本身。字面量形式 `--pairing-token <token>` 为方便起见保留，但进程的参数对机器上的每个用户可读，因此帮助文本与文档都以环境变量为先。
 - **组合期报错**：token 不匹配 `[A-Za-z0-9_-]{16,}`，或非空 `trustedHosts` 不配 token，都会让插件加载失败；CLI 上同时指定两种 token 形式、指定一个没有取值的变量，以及 `--host 0.0.0.0` 或 `--trusted-host` 完全不带 token，都是用法错误。

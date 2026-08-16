@@ -6,7 +6,7 @@
  * HEAD, and seat release on fiber disposal (HMR safety).
  */
 
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -121,6 +121,32 @@ describe('real Loader composition', () => {
     // Traversal outside the dist root is 403; non-GET/HEAD is 405.
     expect((await request(port, '/..%2f..%2fetc%2fpasswd')).status).toBe(403)
     expect((await request(port, '/nowhere', { method: 'POST' })).status).toBe(405)
+
+    // A symlink inside the dist escapes every lexical check — the path stays
+    // under the root and only the filesystem knows it leads elsewhere. On a
+    // network bind that would be an arbitrary read of anything this process
+    // can open, so containment is re-checked against the real path.
+    const outside = join(root!, 'outside-secret.txt')
+    await writeFile(outside, 'SECRET')
+    await symlink(outside, join(root!, 'dist', 'leak.txt'))
+    await symlink(root!, join(root!, 'dist', 'escape'))
+    const leaked = await request(port, '/leak.txt')
+    expect(leaked.status).toBe(403)
+    expect(leaked.body).not.toContain('SECRET')
+    expect((await request(port, '/escape/outside-secret.txt')).status).toBe(403)
+
+    // A link that stays inside the dist is ordinary content, not an escape.
+    await symlink(join(root!, 'dist', 'blob.bin'), join(root!, 'dist', 'alias.bin'))
+    const aliased = await request(port, '/alias.bin')
+    expect(aliased.status).toBe(200)
+    expect(aliased.body).toBe('BLOB')
+
+    // A real directory resolves and then fails to read: still SPA routing, not
+    // a 500 and not a listing.
+    await mkdir(join(root!, 'dist', 'assets'))
+    const directory = await request(port, '/assets')
+    expect(directory.status).toBe(200)
+    expect(directory.body).toContain('shell')
 
     // HMR safety: disposing the frontend row releases the fallback seat (the
     // unclaimed webserver answers 404) and the seat is claimable again.

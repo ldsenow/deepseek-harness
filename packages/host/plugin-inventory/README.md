@@ -6,6 +6,8 @@ Read-only Host projection of the current Cordis Loader tree. `PluginInventoryGat
 
 The phase is `pending`, `loading`, `active`, `failed`, or `unloading`; it is `null` when the entry has no live root Fiber. The snapshot is intentionally point-in-time: Loader remains the sole lifecycle authority, while this package owns no cache, history, provenance model, event stream, or mutation path. Its public payload types live under `./types`, and Typert generates the Host and Client Remote artifacts exposed by `./typert` and `./remote`.
 
+The roster names every plugin a deployment runs, which is the same composition reconnaissance the agent-preset reads are pinned for, so [`client-connection`](../../client/connection/README.md) holds `pluginInventory/list` to a loopback peer: a paired remote device is refused, and the settings tab over it is local-only, like the rest of the configuration plane it sits in.
+
 The service is Remote-only and deliberately declares no same-process Cordis `Context` merge. Client packages consume it through the explicit [`api-remotes`](../../api/remotes/README.md) assembly rather than importing the Host implementation.
 
 ## Model Experience

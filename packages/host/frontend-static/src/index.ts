@@ -12,7 +12,8 @@
  */
 
 import type { ServerResponse } from 'node:http'
-import { readFile } from 'node:fs/promises'
+import { readFile, realpath } from 'node:fs/promises'
+import { realpathSync } from 'node:fs'
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -61,7 +62,7 @@ export async function serveStatic(
   // Traversal rejection: the target must be distRoot itself (`/`) or stay under
   // it. `sep`, not '/': resolve() emits backslash paths on Windows, where a '/'
   // suffix would reject every legitimate subpath as traversal.
-  if (target !== distRoot && !target.startsWith(distRoot + sep)) {
+  if (!within(target, distRoot)) {
     res.writeHead(403)
     res.end()
     return
@@ -75,14 +76,46 @@ export async function serveStatic(
     await serveIndex()
     return
   }
+  let resolved: string
   try {
-    const body = await readFile(target)
+    // The check above is lexical, and path resolution does not follow links: a
+    // symlink inside the dist root pointing outside it passes as an ordinary
+    // subpath, and reading it would serve any file this process can open. Ask
+    // the filesystem where the path really leads and re-check containment.
+    // `distRoot` is itself already link-free (see apply), so the two sides of
+    // the comparison are both real paths.
+    resolved = await realpath(target)
+  } catch {
+    // The target does not exist; SPA routing owns every miss.
+    await serveIndex()
+    return
+  }
+  if (!within(resolved, distRoot)) {
+    res.writeHead(403)
+    res.end()
+    return
+  }
+  try {
+    const body = await readFile(resolved)
+    // Extension of the request path, not of the link destination: what the
+    // dist publishes under a name is what that name means to the client.
     res.writeHead(200, { 'content-type': MIME[extname(target)] ?? 'application/octet-stream' })
     res.end(body)
   } catch {
-    // Miss (ENOENT/EISDIR) falls back to index.html with 200 (SPA routing).
+    // Miss (EISDIR, or a file removed between realpath and read) falls back to
+    // index.html with 200 (SPA routing).
     await serveIndex()
   }
+}
+
+/**
+ * Whether one absolute path is the root itself or sits beneath it.
+ * @param candidate - absolute path to test.
+ * @param root - absolute directory the candidate must not escape.
+ * @returns true when the candidate is contained by the root.
+ */
+function within(candidate: string, root: string): boolean {
+  return candidate === root || candidate.startsWith(root + sep)
 }
 
 /**
@@ -91,7 +124,11 @@ export async function serveStatic(
  * @param config - validated {@link Config}.
  */
 export function apply(ctx: Context, config: Config): void {
-  const distIndex = config.distIndex
+  // Resolve links once, at load: every later containment check compares real
+  // paths against a real root, so a dist reached through a symlinked parent
+  // (a pnpm store, a monorepo link) is not mistaken for an escape. A missing
+  // dist fails the load here instead of answering the first request.
+  const distIndex = realpathSync(config.distIndex)
   const distRoot = dirname(distIndex)
   const renderIndex = async (): Promise<string> =>
     ctx.webServer.applyIndexTaps(await readFile(distIndex, 'utf8'))

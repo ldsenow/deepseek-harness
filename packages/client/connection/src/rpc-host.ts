@@ -72,24 +72,34 @@ export class HostConnectionService extends Service implements HostConnectionHand
 
   /**
    * Compose one shared-channel Fetch handler from its interceptor and fallback.
+   *
+   * The privileged pin runs here, before either target is chosen, because this
+   * is the one point every `/api` endpoint passes through. Enforcing it inside
+   * the fallback instead would make the pin a function of routing order: an
+   * interceptor claiming a privileged endpoint would take it before the check
+   * ran. The /api route already applied the Host fence and token admission, so
+   * the pin reads exactly the socket-derived peer fact — never the Host header,
+   * which any client reaching the socket can forge.
    * @param channel - shared channel mounted by Connection.
+   * @param isPrivileged - whether one channel-relative endpoint requires a loopback peer.
    * @param fallback - handler for endpoints not claimed by the interceptor.
    * @returns Fetch handler that selects exactly one target for each request.
    */
   createSharedFetchHandler(
     channel: '/api',
+    isPrivileged: ConnectionRpcEndpointMatcher,
     fallback: FetchHandler,
   ): FetchHandler {
     return {
       fetch: (request, peer) => {
         const endpoint = endpointFromPath(channel, new URL(request.url).pathname)
+        if (endpoint !== undefined && isPrivileged(endpoint) && !peer.isLoopback) {
+          return Promise.resolve(new Response('forbidden', { status: 403 }))
+        }
         const interceptor = this.interceptors.get(channel)
         if (endpoint === undefined || interceptor === undefined || !interceptor.matches(endpoint)) {
           return fallback.fetch(request, peer)
         }
-        // The /api route already ran the Host fence and token admission, so the
-        // loopback pin here is exactly the socket-derived peer fact — never the
-        // Host header, which any client reaching the socket can forge.
         if (interceptor.options.authority === 'loopback' && !peer.isLoopback) {
           return Promise.resolve(new Response('forbidden', { status: 403 }))
         }

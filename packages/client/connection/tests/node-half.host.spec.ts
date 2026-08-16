@@ -200,6 +200,9 @@ describe('connection node half', () => {
       // reconnaissance, and copy/remove/openDocument manage the roster and
       // drive the host desktop.
       'agentPreset.read', 'agentPreset.copy', 'agentPreset.openDocument', 'agentPreset.remove',
+      // The Gateway's slash form shares the pin's namespace: the live Loader
+      // roster is the same composition reconnaissance as agentPreset.read.
+      'pluginInventory/list',
     ]) {
       const denied = fakeResponse()
       await routes[0]!.handler(
@@ -218,6 +221,67 @@ describe('connection node half', () => {
     await routes[0]!.handler(fakeRequest({ host: '127.0.0.1:3080' }, `${API_PATH}/settings.describe`), local.response)
     expect(local.state.status).toBe(404)
     await dispose()
+  })
+
+  it('pins a privileged endpoint an interceptor claims, so the pin does not depend on routing order', async () => {
+    // The Gateway registers a `trusted-host` interceptor that claims every
+    // `namespace/method` endpoint, and a claimed endpoint never reaches the
+    // fallback. Enforcing the pin inside the fallback would therefore let any
+    // privileged endpoint escape it simply by being claimed; the pin runs ahead
+    // of the choice between the two handlers so that cannot happen.
+    const ctx = new Context()
+    const routes: WebRoute[] = []
+    ctx.provide('webServer', fakeHttpServer(routes, []) as WebServer)
+    ctx.provide('apiProxy', {} as unknown as ApiProxy)
+    const fiber = ctx.plugin({ inject: [...inject], apply }, { trustedHosts: ['harness.example'], pairingToken: AUTH_TOKEN })
+    await fiber.await()
+    const connection = ctx.get('connection') as HostConnectionHandle
+    const reached: string[] = []
+    const remove = connection.rpc.intercept(
+      '/api',
+      endpoint => endpoint.includes('/'),
+      async (endpoint) => {
+        reached.push(endpoint)
+        return { ok: true, value: null }
+      },
+      { authority: 'trusted-host' },
+    )
+    const route = routes.find(candidate => candidate.path === API_PATH)!
+    const requestFor = (method: string): ClientRequest => ({
+      type: 'client-request', rpcId: RpcId('rpc-pinned'), method, payload: {},
+    })
+
+    const denied = fakeResponse()
+    await route.handler(
+      fakePost(authed({ host: 'harness.example' }), '/api/pluginInventory/list', requestFor('pluginInventory/list'), LAN_PEER),
+      denied.response,
+    )
+    expect(denied.state).toMatchObject({ status: 403, body: 'forbidden' })
+    // Denial happens before dispatch, so the claimed handler never ran.
+    expect(reached).toEqual([])
+
+    // An unprivileged claimed endpoint still reaches the same interceptor from
+    // that authenticated remote peer: the pin denies one endpoint, not the
+    // channel.
+    const allowed = fakeResponse()
+    await route.handler(
+      fakePost(authed({ host: 'harness.example' }), '/api/goals/create', requestFor('goals/create'), LAN_PEER),
+      allowed.response,
+    )
+    expect(allowed.state.status).not.toBe(403)
+    expect(reached).toEqual(['goals/create'])
+
+    // And the pinned endpoint is reachable from the machine itself.
+    const local = fakeResponse()
+    await route.handler(
+      fakePost({ host: '127.0.0.1:3080' }, '/api/pluginInventory/list', requestFor('pluginInventory/list')),
+      local.response,
+    )
+    expect(local.state.status).not.toBe(403)
+    expect(reached).toEqual(['goals/create', 'pluginInventory/list'])
+
+    await remove()
+    await fiber.dispose()
   })
 
   it('passes loopback tokenless and admits declared authorities only with the pairing token', async () => {

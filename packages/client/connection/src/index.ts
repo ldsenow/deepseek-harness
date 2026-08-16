@@ -82,7 +82,7 @@ export const Config: z<ConnectionConfig> = z.object({
 })
 
 /**
- * Methods gated to loopback even on a trusted-host deployment. Native dialogs
+ * Endpoints gated to loopback even on a trusted-host deployment. Native dialogs
  * act on the host machine; the settings and credential domains mutate the
  * user's configuration and secret store, and READING them is equally
  * privileged — `settings.describe` returns every exposed namespace's
@@ -100,6 +100,11 @@ export const Config: z<ConnectionConfig> = z.object({
  * The model catalog (`llm.providers`, `llm.models`) is deliberately NOT here:
  * it carries provider ids, display names, and model lists — no endpoints,
  * keys, or key state — and a LAN client's model picker legitimately needs it.
+ *
+ * The set spans both endpoint forms this channel carries: the API Proxy's
+ * dot-form methods and the Typert Gateway's `namespace/method` slash form.
+ * They are one namespace here because the pin is applied once, ahead of the
+ * choice between the two handlers.
  */
 const PRIVILEGED_METHODS = new Set([
   // A preset composition names the plugins a session runs, so reading one is
@@ -131,6 +136,11 @@ const PRIVILEGED_METHODS = new Set([
   'credentials.set',
   'credentials.unset',
   'llm.discoverModels',
+  // The live Loader roster names every plugin this deployment runs, which is
+  // the same reconnaissance `agentPreset.read` is pinned for — a composition
+  // read, one level up. Its settings tab is loopback-only in consequence,
+  // matching the rest of the configuration plane it sits in.
+  'pluginInventory/list',
 ])
 
 /**
@@ -157,20 +167,9 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
   }
   if (ctx.get('apiProxy') !== undefined) assertImageBodyCapacity(ctx, maxRequestBodyBytes)
   const connection = new HostConnectionService(ctx, trustedHosts, pairingToken)
-  const fetchHandler = connection.createSharedFetchHandler(API_PATH, {
-    async fetch(request, peer) {
+  const fetchHandler = connection.createSharedFetchHandler(API_PATH, endpoint => PRIVILEGED_METHODS.has(endpoint), {
+    async fetch(request) {
       const pathname = new URL(request.url).pathname
-      const method = pathname.startsWith(`${API_PATH}/`)
-        ? pathname.slice(API_PATH.length + 1)
-        : undefined
-      // Privileged methods stay pinned to the local machine: the outer route
-      // handler already ran the Host fence and token admission, so here the pin
-      // is exactly the socket-derived loopback fact.
-      if (method !== undefined
-        && PRIVILEGED_METHODS.has(method)
-        && !peer.isLoopback) {
-        return new Response('forbidden', { status: 403 })
-      }
       if (request.method === 'GET' && (pathname === MUX_EVENTS_PATH || pathname === HOST_EVENTS_PATH)) {
         return new Response('upgrade required', {
           status: 426,

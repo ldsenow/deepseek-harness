@@ -6,6 +6,8 @@
 
 阶段为 `pending`、`loading`、`active`、`failed` 或 `unloading`；条目没有存活的根 Fiber 时则为 `null`。该快照刻意只表示调用当下：Loader 仍是唯一的生命周期权威，本包不拥有缓存、历史、来源模型、事件流或修改路径。公开 payload 类型位于 `./types`，Typert 生成由 `./typert` 与 `./remote` 导出的 Host 和 Client Remote 产物。
 
+该名单指明了一个部署所运行的全部插件，与 agent preset 读取被钉定所针对的是同一种组装侦察，因此 [`client-connection`](../../client/connection/README.md) 把 `pluginInventory/list` 钉在回环 peer：已配对的远程设备会被拒绝，其上的设置页也只在本机可用，与它所处的配置面其余部分一致。
+
 该服务仅供 Remote 使用，刻意不声明同进程 Cordis `Context` merge。Client 包通过显式的 [`api-remotes`](../../api/remotes/README.md) 组合消费它，而不导入 Host 实现。
 
 ## 模型体验

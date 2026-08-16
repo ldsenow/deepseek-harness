@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-15-web-lan-pairing-token-tls.md
-2026-08-15-web-lan-pairing-token-tls.md: 8ff0903e2602d114a8b1fbcd5ba620c3a924e029
-2026-08-15-web-lan-pairing-token-tls.zh.md: b8371caedfbf003574c235944a3061825bfdb37f
+2026-08-15-web-lan-pairing-token-tls.md: f5658de23f5c57abeb07d188ea7b64b288b886c3
+2026-08-15-web-lan-pairing-token-tls.zh.md: d865105f355d3ceb069d28ba6719118d79cb3bb6
