@@ -16,8 +16,13 @@ export const inject = ['invariants']
 /**
  * No runtime invariant: every contribution (frontend-static child plugin,
  * prompt section, bashEnv registration) is registry-disposed with the fiber,
- * and each owning registry's package carries that relation's invariant; the
- * package holds no mutable state of its own to audit.
+ * and each owning registry's package carries that relation's invariant. The
+ * two pieces of state this package does own are unobservable from here: the
+ * sleep-inhibitor child is held in `keep-awake`'s effect closure and settles
+ * during that disposer, before any invariant pass could read it, and the TLS
+ * material is a file pair whose only runtime relation — the server serving
+ * the same certificate it generated — belongs to the webserver's own
+ * invariant, which already probes the bound listener.
  */
 const install: InvariantInstaller = () => {}
 

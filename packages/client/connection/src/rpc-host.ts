@@ -14,7 +14,7 @@ import {
 import type { IncomingMessage } from 'node:http'
 import { bridge, type FetchHandler } from './http-bridge.ts'
 import { isTrustedApiRequest } from './api-request-trust.ts'
-import { admitApiRequest, requestPeerIsLoopback } from './api-auth.ts'
+import { admitApiRequest } from './api-auth.ts'
 import { isLoopbackAddress } from './loopback-hostname.ts'
 import { API_PATH } from './api-path.ts'
 import type {
@@ -81,19 +81,19 @@ export class HostConnectionService extends Service implements HostConnectionHand
     fallback: FetchHandler,
   ): FetchHandler {
     return {
-      fetch: (request) => {
+      fetch: (request, peer) => {
         const endpoint = endpointFromPath(channel, new URL(request.url).pathname)
         const interceptor = this.interceptors.get(channel)
         if (endpoint === undefined || interceptor === undefined || !interceptor.matches(endpoint)) {
-          return fallback.fetch(request)
+          return fallback.fetch(request, peer)
         }
-        // The /api route already ran the Host fence, token admission, and
-        // stamped the peer fact before reaching here, so the loopback pin is
-        // exactly the socket-derived peer-loopback fact — never the Host header.
-        if (interceptor.options.authority === 'loopback' && !requestPeerIsLoopback(request)) {
+        // The /api route already ran the Host fence and token admission, so the
+        // loopback pin here is exactly the socket-derived peer fact — never the
+        // Host header, which any client reaching the socket can forge.
+        if (interceptor.options.authority === 'loopback' && !peer.isLoopback) {
           return Promise.resolve(new Response('forbidden', { status: 403 }))
         }
-        return interceptor.fetchHandler.fetch(request)
+        return interceptor.fetchHandler.fetch(request, peer)
       },
     }
   }

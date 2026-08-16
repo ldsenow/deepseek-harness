@@ -93,9 +93,11 @@ export class WebServer extends Service {
     return this.config.host
   }
 
-  /** URL scheme this server answers: 'https' when TLS material is configured, else 'http'. */
+  /** URL scheme this server answers: 'https' when the TLS pair is configured, else 'http'. */
   get scheme(): 'http' | 'https' {
-    return this.config.tlsCertPath !== undefined ? 'https' : 'http'
+    // The same pairedness test activation uses, so a half-configured pair
+    // never reports a scheme the server does not serve.
+    return this.config.tlsCertPath !== undefined && this.config.tlsKeyPath !== undefined ? 'https' : 'http'
   }
 
   /**
@@ -256,9 +258,10 @@ export class WebServer extends Service {
   }
 
   /**
-   * Load the configured TLS material, or undefined for plain HTTP. Half a
-   * pair, an unreadable file, or non-key/cert PEM content rejects activation:
-   * a deployment that asked for TLS must never silently serve plaintext.
+   * Load the configured TLS material, or undefined for plain HTTP. Half a pair
+   * or an unreadable file throws here, and malformed PEM content throws
+   * downstream when the TLS server is created — either way a deployment that
+   * asked for TLS fails activation instead of serving plaintext.
    */
   private async resolveTls(): Promise<{ cert: Buffer; key: Buffer } | undefined> {
     const { tlsCertPath, tlsKeyPath } = this.config

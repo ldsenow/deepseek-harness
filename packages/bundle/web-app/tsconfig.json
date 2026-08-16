@@ -42,6 +42,9 @@
       "path": "../../subprocess/subprocess"
     },
     {
+      "path": "../../util/atomic-write"
+    },
+    {
       "path": "../../runtime-diagnostics/invariants"
     }
   ]

@@ -34,6 +34,15 @@ async function mount(config: Config): Promise<{ values: WebTlsValues; dispose: (
   return { values: ctx.get(WEB_TLS_SERVICE) as WebTlsValues, dispose: () => fiber.dispose() }
 }
 
+describe('web-tls module', () => {
+  it('exposes the function-plugin export face the Loader requires', async () => {
+    const module = await import('../src/tls.ts')
+    expect('default' in module).toBe(false)
+    expect(module.name).toBe('web-tls')
+    expect(module.inject).toEqual(['webStartup'])
+  })
+})
+
 describe('web-tls provider', () => {
   it('provides no paths and touches no files on a loopback deployment', async () => {
     dir = join(mkdtempSync(join(tmpdir(), 'dsh-web-tls-')), 'material')

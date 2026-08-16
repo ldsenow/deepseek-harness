@@ -1,12 +1,6 @@
 /** Pairing-token admission: token format, presentation forms, and socket-peer trust. */
 import { describe, expect, it } from 'vitest'
-import {
-  admitApiRequest,
-  assertPairingToken,
-  PEER_LOOPBACK_HEADER,
-  requestPeerIsLoopback,
-  stampPeerLoopback,
-} from '../src/api-auth.ts'
+import { admitApiRequest, assertPairingToken } from '../src/api-auth.ts'
 
 const TOKEN = 'pairing-token_0123456789-ab'
 const TRUSTED = ['harness.example', '192.168.1.5']
@@ -102,21 +96,5 @@ describe('admitApiRequest', () => {
     expect(admitApiRequest(request({ host: 'harness.example', cookie: 'dsh_auth=wrong-token-0123456789' }), TRUSTED, TOKEN, false)).toBe(false)
     expect(admitApiRequest(request({ host: 'harness.example', authorization: `Basic ${TOKEN}` }), TRUSTED, TOKEN, false)).toBe(false)
     expect(admitApiRequest(request({ host: 'harness.example', cookie: 'no-separator; other=1' }), TRUSTED, TOKEN, false)).toBe(false)
-  })
-})
-
-describe('peer-loopback marker', () => {
-  it('stamps the trusted value, overwriting any client-supplied copy', () => {
-    const headers: Record<string, string | undefined> = { [PEER_LOOPBACK_HEADER]: '1', host: '192.168.1.5' }
-    stampPeerLoopback(headers, false)
-    expect(headers[PEER_LOOPBACK_HEADER]).toBe('0')
-    expect(requestPeerIsLoopback(request({ [PEER_LOOPBACK_HEADER]: headers[PEER_LOOPBACK_HEADER]! }))).toBe(false)
-    stampPeerLoopback(headers, true)
-    expect(requestPeerIsLoopback(request({ [PEER_LOOPBACK_HEADER]: headers[PEER_LOOPBACK_HEADER]! }))).toBe(true)
-  })
-
-  it('reads absent or non-"1" markers as non-loopback (fail closed)', () => {
-    expect(requestPeerIsLoopback(request({}))).toBe(false)
-    expect(requestPeerIsLoopback(request({ [PEER_LOOPBACK_HEADER]: 'yes' }))).toBe(false)
   })
 })

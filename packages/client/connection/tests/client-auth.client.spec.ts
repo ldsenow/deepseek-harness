@@ -55,6 +55,34 @@ describe('bootstrapAuthToken', () => {
     expect(doc.cookie).toBe(`dsh_auth=${TOKEN}; path=/; SameSite=Strict; Secure`)
   })
 
+  it('drops a malformed fragment token instead of storing it or extending the cookie', () => {
+    // The fragment is attacker-reachable: a `;`-bearing value would otherwise
+    // append its own attributes to the cookie, and any junk would be stored
+    // permanently since nothing clears the key.
+    const { data, storage } = fakeStorage()
+    const replaced: string[] = []
+    const doc = { cookie: '' }
+    globals.location = { hash: '#auth=short;%20Domain=evil.example', pathname: '/', search: '', hostname: '192.168.1.5', protocol: 'https:' }
+    globals.localStorage = storage
+    globals.document = doc
+    globals.history = { replaceState: (_data, _unused, url) => { replaced.push(String(url)) } }
+    bootstrapAuthToken()
+    expect(data.get(AUTH_STORAGE_KEY)).toBeUndefined()
+    expect(doc.cookie).toBe('')
+    // The address bar is still cleaned even though the value was rejected.
+    expect(replaced).toEqual(['/'])
+  })
+
+  it('ignores a malformed stored token rather than republishing it', () => {
+    const { storage } = fakeStorage({ [AUTH_STORAGE_KEY]: 'not a valid token' })
+    const doc = { cookie: '' }
+    globals.location = { hash: '', pathname: '/', search: '', hostname: '192.168.1.5', protocol: 'https:' }
+    globals.localStorage = storage
+    globals.document = doc
+    bootstrapAuthToken()
+    expect(doc.cookie).toBe('')
+  })
+
   it('omits Secure on a loopback http page so local serving keeps working', () => {
     const { storage } = fakeStorage({ [AUTH_STORAGE_KEY]: TOKEN })
     const doc = { cookie: '' }

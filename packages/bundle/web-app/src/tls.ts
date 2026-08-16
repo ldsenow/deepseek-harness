@@ -12,12 +12,13 @@
  * @module @deepseek-ai/dsh-web-app/tls
  */
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { generate } from 'selfsigned'
-import { resolveLanTrust } from './index.ts'
+import { lanIpv4Addresses } from './lan-addresses.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'web-tls'
@@ -47,8 +48,16 @@ export const Config: z<Config> = z.object({
   dir: z.string().required(),
 })
 
-/** Certificate validity in milliseconds (10 years): long enough that a paired device's accepted exception outlives the install. */
+/**
+ * Certificate parameters. Validity runs ten years so a paired device's
+ * accepted exception outlives the install; the 2048-bit RSA key and SHA-256
+ * signature are the smallest pair every current browser accepts without a
+ * warning of its own. All three are fixed: a deployment that weakened them
+ * would only degrade the certificate its own devices must trust.
+ */
 const CERT_VALIDITY_MS = 3650 * 24 * 60 * 60 * 1000
+const CERT_KEY_SIZE = 2048
+const CERT_ALGORITHM = 'sha256'
 
 /**
  * Provide the TLS paths, generating the self-signed material on first
@@ -64,26 +73,31 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   }
   const certPath = join(config.dir, 'cert.pem')
   const keyPath = join(config.dir, 'key.pem')
-  if (!existsSync(certPath) || !existsSync(keyPath)) {
-    // Owner-only on POSIX so the private key's directory is not world-traversable
-    // on a shared host; Windows ACLs ignore mode, matching other dsh-home dirs.
-    mkdirSync(config.dir, { recursive: true, mode: 0o700 })
+  // Owner-only on POSIX so the private key's directory is not world-traversable
+  // on a shared host; Windows ACLs ignore mode, matching other dsh-home dirs.
+  // Created before the lock because the lock is a sibling inside it.
+  mkdirSync(config.dir, { recursive: true, mode: 0o700 })
+  // Two first boots would otherwise interleave and leave a certificate from
+  // one paired with a key from the other, which fails only later at
+  // https.createServer. The lock serializes them; the loser re-checks and
+  // keeps the winner's material.
+  await withFileLock(certPath, async () => {
+    if (existsSync(certPath) && existsSync(keyPath)) return
     const pems = await generate([{ name: 'commonName', value: 'dsh' }], {
       notAfterDate: new Date(Date.now() + CERT_VALIDITY_MS),
-      keySize: 2048,
-      algorithm: 'sha256',
+      keySize: CERT_KEY_SIZE,
+      algorithm: CERT_ALGORITHM,
       extensions: [{
         name: 'subjectAltName',
         altNames: [
           { type: 2, value: 'localhost' },
           { type: 7, ip: '127.0.0.1' },
-          ...resolveLanTrust('0.0.0.0', []).lanAddresses.map(ip => ({ type: 7 as const, ip })),
+          ...lanIpv4Addresses().map(ip => ({ type: 7 as const, ip })),
         ],
       }],
     })
-    writeFileSync(certPath, pems.cert)
-    // Owner-only on POSIX; Windows ACLs ignore mode, matching other dsh-home files.
-    writeFileSync(keyPath, pems.private, { mode: 0o600 })
-  }
+    await writeFileAtomic(keyPath, pems.private, { mode: 0o600, dirMode: 0o700 })
+    await writeFileAtomic(certPath, pems.cert, { mode: 0o644, dirMode: 0o700 })
+  })
   ctx.provide(WEB_TLS_SERVICE, { paths: { certPath, keyPath } } satisfies WebTlsValues)
 }

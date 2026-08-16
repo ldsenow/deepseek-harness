@@ -12,9 +12,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apply, Config, inject, internals, resolveInhibitor, type InhibitorCommand } from '../src/keep-awake.ts'
 
 const originalSpawn = internals.spawnInhibitor
+const originalTerminate = internals.terminateInhibitor
+/** Restored after a test forces `process.platform` to exercise the Windows path. */
+const PLATFORM = process.platform
+
+/** Fakes carry no real pid, so termination routes to the fake's own kill. */
+function terminateFake(child: ChildProcess): void {
+  child.kill()
+}
 
 afterEach(() => {
   internals.spawnInhibitor = originalSpawn
+  internals.terminateInhibitor = originalTerminate
   vi.restoreAllMocks()
 })
 
@@ -23,6 +32,7 @@ class FakeInhibitor extends EventEmitter {
   exitCode: number | null = null
   signalCode: NodeJS.Signals | null = null
   killed = false
+  pid: number | undefined = undefined
 
   kill(): boolean {
     this.killed = true
@@ -44,6 +54,18 @@ function asChild(fake: FakeInhibitor): ChildProcess {
   return fake as unknown as ChildProcess
 }
 
+describe('web-keep-awake module', () => {
+  it('exposes the function-plugin export face the Loader requires', async () => {
+    // A default export would make the Loader discard the namespace, and the
+    // synthetic row in the Loader test below cannot catch that (it declares
+    // the protocol itself), so the real module is asserted here.
+    const module = await import('../src/keep-awake.ts')
+    expect('default' in module).toBe(false)
+    expect(module.name).toBe('web-keep-awake')
+    expect(module.inject).toEqual([])
+  })
+})
+
 describe('resolveInhibitor', () => {
   it('maps each platform to its own sleep facility', () => {
     expect(resolveInhibitor('darwin')).toEqual({ command: 'caffeinate', args: ['-i'] })
@@ -52,6 +74,40 @@ describe('resolveInhibitor', () => {
     const windows = resolveInhibitor('win32')
     expect(windows.command).toBe('powershell')
     expect(windows.args.join(' ')).toContain('SetThreadExecutionState')
+  })
+})
+
+describe('terminateInhibitor', () => {
+  it('does nothing for a child that never got a pid', () => {
+    // A failed spawn leaves `pid` undefined; signalling group 0 from here would
+    // hit this process's own group, so termination must be a no-op instead.
+    const fake = new FakeInhibitor()
+    const groupSignals = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    originalTerminate(asChild(fake))
+    expect(fake.killed).toBe(false)
+    expect(groupSignals).not.toHaveBeenCalled()
+  })
+
+  it('kills the process directly on Windows, where the holder leads no group', () => {
+    const fake = new FakeInhibitor()
+    fake.pid = 4242
+    const groupSignals = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
+    try {
+      originalTerminate(asChild(fake))
+    } finally {
+      Object.defineProperty(process, 'platform', { value: PLATFORM, configurable: true })
+    }
+    expect(fake.killed).toBe(true)
+    expect(groupSignals).not.toHaveBeenCalled()
+  })
+
+  it('swallows a signal against an already-dead group', () => {
+    const fake = new FakeInhibitor()
+    fake.pid = 4242
+    fake.kill = () => { throw new Error('kill ESRCH') }
+    vi.spyOn(process, 'kill').mockImplementation(() => { throw new Error('kill ESRCH') })
+    expect(() => { originalTerminate(asChild(fake)) }).not.toThrow()
   })
 })
 
@@ -69,6 +125,7 @@ describe('web-keep-awake plugin', () => {
     const fake = new FakeInhibitor()
     const spawned: InhibitorCommand[] = []
     internals.spawnInhibitor = (command) => { spawned.push(command); return asChild(fake.spawnOk()) }
+    internals.terminateInhibitor = terminateFake
     const warn = vi.fn()
     const ctx = new Context()
     Object.defineProperty(ctx, 'logger', { value: { warn }, configurable: true })
@@ -86,6 +143,7 @@ describe('web-keep-awake plugin', () => {
   it('warns when the inhibitor dies while serving, and dispose then has nothing to kill', async () => {
     const fake = new FakeInhibitor()
     internals.spawnInhibitor = () => asChild(fake.spawnOk())
+    internals.terminateInhibitor = terminateFake
     const warn = vi.fn()
     const ctx = new Context()
     Object.defineProperty(ctx, 'logger', { value: { warn }, configurable: true })
@@ -96,6 +154,45 @@ describe('web-keep-awake plugin', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('the host may sleep again'))
     await fiber.dispose()
     expect(fake.killed).toBe(false)
+  })
+
+  it('survives an inhibitor error after spawn instead of crashing the process', async () => {
+    // `events.once(child, 'spawn')` drops its own temporary 'error' handler on
+    // resolve; without a durable replacement this emit would be an unhandled
+    // 'error' and take the process down.
+    const fake = new FakeInhibitor()
+    internals.spawnInhibitor = () => asChild(fake.spawnOk())
+    internals.terminateInhibitor = terminateFake
+    const warn = vi.fn()
+    const ctx = new Context()
+    Object.defineProperty(ctx, 'logger', { value: { warn }, configurable: true })
+    const fiber = ctx.plugin({ inject: [...inject], apply }, new Config({ enabled: true }))
+    await fiber.await()
+    expect(() => { fake.emit('error', new Error('kill EPERM')) }).not.toThrow()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('the host may sleep again'))
+    // Teardown still completes: an 'error' must not reject the disposer.
+    await fiber.dispose()
+    expect(fake.killed).toBe(true)
+  })
+
+  it('stays silent about an error raised by teardown itself', async () => {
+    // Signalling a child that is already exiting can surface an 'error'; that
+    // is the disposal this plugin asked for, not a lost inhibitor, so it must
+    // neither warn nor throw.
+    const fake = new FakeInhibitor()
+    internals.spawnInhibitor = () => asChild(fake.spawnOk())
+    internals.terminateInhibitor = (child) => {
+      child.emit('error', new Error('kill ESRCH'))
+      terminateFake(child)
+    }
+    const warn = vi.fn()
+    const ctx = new Context()
+    Object.defineProperty(ctx, 'logger', { value: { warn }, configurable: true })
+    const fiber = ctx.plugin({ inject: [...inject], apply }, new Config({ enabled: true }))
+    await fiber.await()
+    await fiber.dispose()
+    expect(fake.killed).toBe(true)
+    expect(warn).not.toHaveBeenCalled()
   })
 
   it('rejects activation when the inhibitor cannot start', async () => {
@@ -173,7 +270,9 @@ describe('web-keep-awake plugin', () => {
     })
     expect(child.pid).toBeGreaterThan(0)
     const exited = new Promise<void>((resolve) => { child.once('exit', () => { resolve() }) })
-    child.kill()
+    // The production terminator: a POSIX group signal, so anything the
+    // inhibitor spawned dies with it rather than outliving teardown.
+    originalTerminate(child)
     await exited
     expect(child.exitCode !== null || child.signalCode !== null).toBe(true)
   })

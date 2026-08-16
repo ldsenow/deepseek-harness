@@ -11,7 +11,6 @@
  */
 
 import { createRequire } from 'node:module'
-import { networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -21,6 +20,7 @@ import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-shell-env'
+import { lanIpv4Addresses } from './lan-addresses.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'web-app'
@@ -88,11 +88,7 @@ const ALL_INTERFACES_HOST = '0.0.0.0'
  * @returns the LAN display addresses and invocation-derived fence authorities.
  */
 export function resolveLanTrust(bindHost: string, extra: readonly string[]): WebRuntimeValues {
-  const lanAddresses = bindHost === ALL_INTERFACES_HOST
-    ? Object.values(networkInterfaces()).flat()
-      .filter((iface): iface is NonNullable<typeof iface> => iface !== undefined && iface.family === 'IPv4' && !iface.internal)
-      .map(iface => iface.address)
-    : []
+  const lanAddresses = bindHost === ALL_INTERFACES_HOST ? lanIpv4Addresses() : []
   return { lanAddresses, trustedHosts: [...lanAddresses, ...extra] }
 }
 

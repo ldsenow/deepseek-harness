@@ -42,6 +42,8 @@ describe('HTTP bridge abort', () => {
       url: '/api/host.pickDirectory',
       method: 'POST',
       headers: { 'content-type': 'application/json' },
+      // The bridge derives the peer from the socket the kernel filled in.
+      socket: { remoteAddress: '127.0.0.1' },
     })
 
     const response = Object.assign(new EventEmitter(), {

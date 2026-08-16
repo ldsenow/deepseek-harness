@@ -4,6 +4,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { isLoopbackAddress } from './loopback-hostname.ts'
 
 /** Default carrier cap for all HTTP RPC bodies: sized for the default
  * aggregate image limit (100 MiB) after base64 expansion plus envelope
@@ -11,14 +12,25 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
  * each body in memory, so this cap is also the per-request resident bound. */
 export const DEFAULT_MAX_REQUEST_BODY_BYTES = 160 * 1024 * 1024
 
+/**
+ * Connection facts the node layer observes and the Fetch representation cannot
+ * carry. Derived from the socket by {@link bridge}, so a handler never depends
+ * on a client-supplied header for them.
+ */
+export interface RequestPeer {
+  /** Whether the connection originated on the loopback interface. */
+  readonly isLoopback: boolean
+}
+
 /** Transport-independent request handler consumed by the Host HTTP bridge. */
 export interface FetchHandler {
   /**
    * Handle one standard Fetch request.
    * @param request - request produced by the active transport bridge.
+   * @param peer - socket-derived facts about the connection behind it.
    * @returns complete or streaming Fetch response.
    */
-  fetch(request: Request): Promise<Response>
+  fetch(request: Request, peer: RequestPeer): Promise<Response>
 }
 
 /**
@@ -72,7 +84,9 @@ export async function bridge(
     ...chunks.length > 0 ? { body: Buffer.concat(chunks) } : {},
     signal: abort.signal,
   })
-  const response = await apiHandler.fetch(request)
+  // The socket is the only place the peer address survives: the Fetch request
+  // built above carries headers a client controls, never the connection.
+  const response = await apiHandler.fetch(request, { isLoopback: isLoopbackAddress(req.socket.remoteAddress) })
   res.writeHead(response.status, Object.fromEntries(response.headers.entries()))
   if (response.body === null) {
     res.end()

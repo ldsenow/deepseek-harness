@@ -11,7 +11,12 @@
  */
 export function isLoopbackHostname(hostname: string): boolean {
   if (hostname === 'localhost' || hostname === '[::1]') return true
-  const parts = hostname.split('.')
+  return isIpv4Loopback(hostname)
+}
+
+/** Whether a dotted-quad literal falls in IPv4 `127.0.0.0/8`. */
+function isIpv4Loopback(literal: string): boolean {
+  const parts = literal.split('.')
   return parts.length === 4
     && parts[0] === '127'
     && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255)
@@ -31,9 +36,5 @@ export function isLoopbackHostname(hostname: string): boolean {
 export function isLoopbackAddress(address: string | undefined): boolean {
   if (address === undefined) return false
   if (address === '::1') return true
-  const ipv4 = address.startsWith('::ffff:') ? address.slice('::ffff:'.length) : address
-  const parts = ipv4.split('.')
-  return parts.length === 4
-    && parts[0] === '127'
-    && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255)
+  return isIpv4Loopback(address.startsWith('::ffff:') ? address.slice('::ffff:'.length) : address)
 }

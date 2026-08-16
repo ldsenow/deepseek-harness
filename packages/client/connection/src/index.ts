@@ -8,7 +8,7 @@ import { toFetchHandler } from '@deepseek-ai/dsh-host-apiproxy'
 import { API_PATH, HOST_EVENTS_PATH, MUX_EVENTS_PATH } from './api-path.ts'
 import { bridge, DEFAULT_MAX_REQUEST_BODY_BYTES } from './http-bridge.ts'
 import { assertTrustedAuthority } from './api-request-trust.ts'
-import { admitApiRequest, assertPairingToken, requestPeerIsLoopback, stampPeerLoopback } from './api-auth.ts'
+import { admitApiRequest, assertPairingToken } from './api-auth.ts'
 import { isLoopbackAddress } from './loopback-hostname.ts'
 import { HostConnectionService } from './rpc-host.ts'
 import { rejectWebSocketUpgrade, WebSocketDownlinks } from './websocket-downlink.ts'
@@ -25,7 +25,7 @@ export { HostConnectionService } from './rpc-host.ts'
 
 export { API_PATH, HOST_EVENTS_PATH, MUX_EVENTS_PATH } from './api-path.ts'
 
-export { AUTH_COOKIE_NAME, AUTH_FRAGMENT_PARAM, PAIRING_TOKEN_PATTERN } from './auth-wire.ts'
+export { PAIRING_TOKEN_PATTERN } from './auth-wire.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'client-connection'
@@ -158,17 +158,17 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
   if (ctx.get('apiProxy') !== undefined) assertImageBodyCapacity(ctx, maxRequestBodyBytes)
   const connection = new HostConnectionService(ctx, trustedHosts, pairingToken)
   const fetchHandler = connection.createSharedFetchHandler(API_PATH, {
-    async fetch(request) {
+    async fetch(request, peer) {
       const pathname = new URL(request.url).pathname
       const method = pathname.startsWith(`${API_PATH}/`)
         ? pathname.slice(API_PATH.length + 1)
         : undefined
       // Privileged methods stay pinned to the local machine: the outer route
       // handler already ran the Host fence and token admission, so here the pin
-      // is exactly the loopback-peer fact the node layer stamped.
+      // is exactly the socket-derived loopback fact.
       if (method !== undefined
         && PRIVILEGED_METHODS.has(method)
-        && !requestPeerIsLoopback(request)) {
+        && !peer.isLoopback) {
         return new Response('forbidden', { status: 403 })
       }
       if (request.method === 'GET' && (pathname === MUX_EVENTS_PATH || pathname === HOST_EVENTS_PATH)) {
@@ -192,8 +192,6 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
         res.end('forbidden')
         return
       }
-      // Carry the trusted peer fact to the Fetch-side privileged pin.
-      stampPeerLoopback(req.headers, peerIsLoopback)
       await bridge(req, res, fetchHandler, maxRequestBodyBytes)
     },
   }
