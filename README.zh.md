@@ -34,6 +34,19 @@ pnpm run build
 pnpm dsh web
 ```
 
+## 远程访问（局域网）
+
+默认情况下 `dsh web` 只服务 `127.0.0.1`。若要从网络上的另一台设备——手机、平板或第二台电脑——使用 Web UI，请在配对 token 的保护下服务所有网络接口：
+
+```sh
+npx @deepseek-ai/dsh web --host 0.0.0.0 \
+  --pairing-token "$(node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))")"
+```
+
+该命令会打印形如 `https://<lan-ip>:3080/#auth=<token>` 的配对 URL，并通过自动生成的自签名证书提供服务。在另一台设备上打开该链接一次——它会接受证书并存下 token——此后直接输入裸地址 `https://<lan-ip>:3080` 即可重连。加上 `--keep-awake` 可让宿主机在服务期间不进入睡眠。
+
+`/api` 表面以 `dsh` 进程身份执行命令，因此每个非回环客户端都需要配对 token；本地（回环）使用以及 `adb reverse`、SSH 等隧道保持免 token。详见 [Web UI 指南](docs/user/guide/index.md#remote-access-lan)。
+
 ## 社区与支持
 
 - 欢迎通过 [GitHub Discussions](https://github.com/deepseek-ai/deepseek-harness/discussions) 提交反馈或 bug 报告。
