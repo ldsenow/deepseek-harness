@@ -13,7 +13,6 @@ import {
 } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { IncomingMessage } from 'node:http'
 import { bridge, type FetchHandler } from './http-bridge.ts'
-import { isTrustedApiRequest } from './api-request-trust.ts'
 import { admitApiRequest } from './api-auth.ts'
 import { isLoopbackAddress } from '@deepseek-ai/dsh-loopback'
 import { API_PATH } from './api-path.ts'
@@ -93,17 +92,14 @@ export class HostConnectionService extends Service implements HostConnectionHand
     return {
       fetch: (request, peer) => {
         const endpoint = endpointFromPath(channel, new URL(request.url).pathname)
-        if (endpoint !== undefined && isPrivileged(endpoint) && !peer.isLoopback) {
-          return Promise.resolve(new Response('forbidden', { status: 403 }))
-        }
         const interceptor = this.interceptors.get(channel)
-        if (endpoint === undefined || interceptor === undefined || !interceptor.matches(endpoint)) {
-          return fallback.fetch(request, peer)
-        }
-        if (interceptor.options.authority === 'loopback' && !peer.isLoopback) {
+        const claimed = endpoint !== undefined && interceptor?.matches(endpoint) === true
+        const needsLoopback = (endpoint !== undefined && isPrivileged(endpoint))
+          || (claimed && interceptor.options.authority === 'loopback')
+        if (needsLoopback && !peer.isLoopback) {
           return Promise.resolve(new Response('forbidden', { status: 403 }))
         }
-        return interceptor.fetchHandler.fetch(request, peer)
+        return claimed ? interceptor.fetchHandler.fetch(request, peer) : fallback.fetch(request, peer)
       },
     }
   }
@@ -115,15 +111,12 @@ export class HostConnectionService extends Service implements HostConnectionHand
     options: ConnectionRpcHandlerOptions,
   ): () => Promise<void> {
     assertChannel(channel)
-    const admit = (req: IncomingMessage): boolean => {
-      const peerIsLoopback = isLoopbackAddress(req.socket.remoteAddress)
-      // A loopback-authority channel is pinned to the local machine: the Host
-      // fence (rebinding defense) plus a genuine loopback peer, never a
-      // loopback-looking Host from a remote socket.
-      return options.authority === 'loopback'
-        ? peerIsLoopback && isTrustedApiRequest(req, [])
-        : admitApiRequest(req, this.trustedHosts, this.pairingToken, peerIsLoopback)
-    }
+    // A loopback-authority channel declares no trusted host and no token, so
+    // the same admission rule admits only a genuine loopback peer.
+    const trustedHosts = options.authority === 'loopback' ? [] : this.trustedHosts
+    const pairingToken = options.authority === 'loopback' ? undefined : this.pairingToken
+    const admit = (req: IncomingMessage): boolean =>
+      admitApiRequest(req, trustedHosts, pairingToken, isLoopbackAddress(req.socket.remoteAddress))
     const fetchHandler = rpcFetchHandler(channel, handler)
     const route: WebRoute = {
       kind: 'prefix',

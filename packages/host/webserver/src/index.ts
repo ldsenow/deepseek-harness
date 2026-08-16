@@ -278,7 +278,8 @@ export class WebServer extends Service {
     if (tlsCertPath === undefined || tlsKeyPath === undefined) {
       throw new Error('webserver: tlsCertPath and tlsKeyPath must be configured together')
     }
-    return { cert: await readFile(tlsCertPath), key: await readFile(tlsKeyPath) }
+    const [cert, key] = await Promise.all([readFile(tlsCertPath), readFile(tlsKeyPath)])
+    return { cert, key }
   }
 
   /** Longest-prefix-wins over the prefix table after an exact-table miss. */

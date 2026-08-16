@@ -267,26 +267,11 @@ describe('real Loader composition', () => {
     }
   })
 
-  it('fails the fiber on unreadable or half-configured TLS material', { timeout: 60_000 }, async () => {
-    let failure: unknown
-    try {
-      await loadComposition(0, { tlsCertPath: '/no/such/cert.pem', tlsKeyPath: '/no/such/key.pem' })
-    } catch (error) {
-      failure = error
-    }
-    expect(String(failure)).toMatch(/failed to apply loader entry.*ENOENT/)
-    await context?.fiber.dispose()
-    if (root !== undefined) await rm(root, { recursive: true, force: true })
-    context = undefined
-    root = undefined
-
-    let half: unknown
-    try {
-      await loadComposition(0, { tlsCertPath: '/no/such/cert.pem' })
-    } catch (error) {
-      half = error
-    }
-    expect(String(half)).toMatch(/tlsCertPath and tlsKeyPath must be configured together/)
+  it.each([
+    ['unreadable material', { tlsCertPath: '/no/such/cert.pem', tlsKeyPath: '/no/such/key.pem' }, /failed to apply loader entry.*ENOENT/],
+    ['a half-configured pair', { tlsCertPath: '/no/such/cert.pem' }, /tlsCertPath and tlsKeyPath must be configured together/],
+  ])('fails the fiber on %s', { timeout: 60_000 }, async (_case, tls, message) => {
+    await expect(loadComposition(0, tls)).rejects.toThrow(message)
   })
 
   it('fails the fiber when the port is already taken (fail-loud at activation)', { timeout: 60_000 }, async () => {

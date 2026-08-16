@@ -60,61 +60,42 @@ export async function serveStatic(
   renderIndex: (nonce: string) => Promise<string>,
 ): Promise<void> {
   const target = resolve(normalize(join(distRoot, pathname)))
-  // Traversal rejection: the target must be distRoot itself (`/`) or stay under
-  // it. `sep`, not '/': resolve() emits backslash paths on Windows, where a '/'
-  // suffix would reject every legitimate subpath as traversal.
-  if (!within(target, distRoot)) {
-    res.writeHead(403)
-    res.end()
-    return
-  }
+  const forbid = (): void => { res.writeHead(403); res.end() }
   const serveIndex = async (): Promise<void> => {
     // Fresh per document: a reused nonce keeps working for an injection that
     // once observed it.
     const nonce = randomBytes(16).toString('base64')
     const body = await renderIndex(nonce)
     res.writeHead(200, {
+      ...SECURITY_HEADERS,
       'content-type': MIME['.html'],
-      'content-security-policy': contentSecurityPolicy(nonce),
-      'x-content-type-options': 'nosniff',
+      'content-security-policy': `${CSP_DIRECTIVES}; script-src 'self' 'unsafe-eval' 'nonce-${nonce}'`,
       'referrer-policy': 'no-referrer',
     })
     res.end(body)
   }
-  if (target === distRoot || target === distIndex) {
-    await serveIndex()
-    return
-  }
-  let resolved: string
+  // `sep`, not '/': resolve() emits backslashes on Windows, where a '/' suffix
+  // would reject every legitimate subpath as traversal.
+  if (!within(target, distRoot)) { forbid(); return }
+  if (target === distRoot || target === distIndex) { await serveIndex(); return }
   try {
     // `resolve` normalizes `..` but does not follow links, so a symlink out of
-    // the dist passes the lexical check above. `distRoot` is link-free (see
-    // apply), so both sides of the recheck are real paths.
-    resolved = await realpath(target)
-  } catch {
-    // The target does not exist; SPA routing owns every miss.
-    await serveIndex()
-    return
-  }
-  if (!within(resolved, distRoot)) {
-    res.writeHead(403)
-    res.end()
-    return
-  }
-  try {
+    // the dist passes the check above. `distRoot` is link-free (see apply), so
+    // both sides of the recheck are real paths.
+    const resolved = await realpath(target)
+    if (!within(resolved, distRoot)) { forbid(); return }
     const body = await readFile(resolved)
     // `target`, not `resolved`: a link's own name decides its type.
-    res.writeHead(200, {
-      'content-type': MIME[extname(target)] ?? 'application/octet-stream',
-      'x-content-type-options': 'nosniff',
-    })
+    res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': MIME[extname(target)] ?? 'application/octet-stream' })
     res.end(body)
   } catch {
-    // Miss (EISDIR, or a file removed between realpath and read) falls back to
-    // index.html with 200 (SPA routing).
+    // Absent, a directory, or removed mid-read: SPA routing owns every miss.
     await serveIndex()
   }
 }
+
+/** Sent on every static response, documents and assets alike. */
+const SECURITY_HEADERS = { 'x-content-type-options': 'nosniff' } as const
 
 /**
  * The Content-Security-Policy every index response carries; what it defends
@@ -123,23 +104,18 @@ export async function serveStatic(
  * for the client code runner's `new Function`, inline `style-src` for the
  * `style` attributes shiki and KaTeX emit, and remote `img-src` for the images
  * markdown renders.
- * @param nonce - this response's script nonce.
- * @returns the policy header value.
  */
-function contentSecurityPolicy(nonce: string): string {
-  return [
-    "default-src 'self'",
-    `script-src 'self' 'unsafe-eval' 'nonce-${nonce}'`,
-    "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob: https: http:",
-    "font-src 'self' data:",
-    "connect-src 'self'",
-    "object-src 'none'",
-    "base-uri 'none'",
-    "frame-ancestors 'none'",
-    "form-action 'none'",
-  ].join('; ')
-}
+const CSP_DIRECTIVES = [
+  "default-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob: https: http:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'none'",
+].join('; ')
 
 /**
  * Whether one absolute path is the root itself or sits beneath it.

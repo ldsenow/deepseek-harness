@@ -12,3 +12,6 @@ export const AUTH_FRAGMENT_PARAM = 'auth'
 
 /** Accepted token form: URL-, cookie-, and shell-safe characters with enough length for real entropy. */
 export const PAIRING_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,}$/
+
+/** {@link PAIRING_TOKEN_PATTERN} in prose, for help text and rejection messages. */
+export const PAIRING_TOKEN_REQUIREMENT = 'at least 16 characters of A-Za-z0-9_-'

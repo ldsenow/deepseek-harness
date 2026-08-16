@@ -93,56 +93,35 @@ function isTrustedAuthority(hostUrl: URL, trustedHosts: readonly string[]): bool
   })
 }
 
-/** Fence verdict: refused outright, or the kind of accepted authority the request addressed. */
-export type ApiRequestAuthority = 'refused' | 'loopback' | 'trusted-host'
-
 /**
- * Classify one /api request against the trust fence: refused, addressed to a
- * loopback authority, or addressed to a declared trusted authority. The
- * loopback/trusted-host distinction feeds authentication — a non-loopback
- * caller must additionally present the pairing token
- * ([api-auth](./api-auth.ts)) — and the privileged-method loopback pin.
+ * Whether one /api request passes the trust fence: the Host is loopback or a
+ * declared authority, and any attached browser markers are same-origin.
+ * Authentication is separate ([api-auth](./api-auth.ts)) and reads the socket
+ * peer, not this verdict.
  * @param request - Node HTTP or Fetch request facts (headers).
  * @param trustedHosts - non-loopback authorities this deployment serves: exact `host:port`, or port-less `host` matching any port.
- * @returns 'refused' unless the Host is ours and any attached browser markers are same-origin; otherwise which authority kind the Host is.
+ * @returns true when the Host is ours and no marker contradicts it.
  */
-export function classifyApiRequest(request: ApiTrustRequest, trustedHosts: readonly string[]): ApiRequestAuthority {
+export function isTrustedApiRequest(request: ApiTrustRequest, trustedHosts: readonly string[]): boolean {
   // Host fence (DNS-rebinding defense), applied to every request: the browser
   // fills Host from the URL it believes it is talking to, so a rebound page
   // carries the attacker's domain here even though the socket lands on this
   // server. There is no marker shortcut — a browser read over plain HTTP
-  // (images and navigations) arrives with neither Origin nor
-  // Fetch-Metadata, indistinguishable from curl, and its response is readable
-  // by the rebound page.
+  // (images and navigations) arrives with neither Origin nor Fetch-Metadata,
+  // indistinguishable from curl, and its response is readable by that page.
   const host = header(request.headers, 'host')
-  if (host === undefined) return 'refused'
+  if (host === undefined) return false
   const hostUrl = parseAuthority(host)
-  if (hostUrl === undefined) return 'refused'
-  const loopback = isLoopbackHostname(hostUrl.hostname)
-  if (!loopback && !isTrustedAuthority(hostUrl, trustedHosts)) return 'refused'
-  const accepted: ApiRequestAuthority = loopback ? 'loopback' : 'trusted-host'
-  // Cross-site fence: modern browsers label the initiator relationship on
-  // every fetch; an explicit cross-site marker is refused regardless of Origin.
-  if (header(request.headers, 'sec-fetch-site') === 'cross-site') return 'refused'
-  // Origin fence: when a browser attaches an Origin it must be exactly this
-  // authority (compared through the same normalization as the Host). Absent
-  // Origin is fine — the Host fence above already bound the request. The
-  // literal "null" (sandboxed iframes, file: pages) is an opaque origin, refused.
+  if (hostUrl === undefined) return false
+  if (!isLoopbackHostname(hostUrl.hostname) && !isTrustedAuthority(hostUrl, trustedHosts)) return false
+  if (header(request.headers, 'sec-fetch-site') === 'cross-site') return false
+  // An attached Origin must be exactly this authority; absent is fine, since
+  // the Host fence already bound the request. Literal "null" is opaque.
   const origin = header(request.headers, 'origin')
-  if (origin === undefined) return accepted
+  if (origin === undefined) return true
   try {
-    return new URL(origin).host === hostUrl.host ? accepted : 'refused'
+    return new URL(origin).host === hostUrl.host
   } catch {
-    return 'refused'
+    return false
   }
-}
-
-/**
- * Decide whether one /api request may reach the RPC bridge.
- * @param request - Node HTTP or Fetch request facts (headers).
- * @param trustedHosts - non-loopback authorities this deployment serves: exact `host:port`, or port-less `host` matching any port.
- * @returns true when the Host is ours (loopback or trusted) and any attached browser markers are same-origin.
- */
-export function isTrustedApiRequest(request: ApiTrustRequest, trustedHosts: readonly string[]): boolean {
-  return classifyApiRequest(request, trustedHosts) !== 'refused'
 }

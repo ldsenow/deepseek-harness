@@ -7,8 +7,8 @@
  */
 
 import { createHash, timingSafeEqual } from 'node:crypto'
-import { AUTH_COOKIE_NAME, PAIRING_TOKEN_PATTERN } from './auth-wire.ts'
-import { classifyApiRequest, header, type ApiTrustRequest } from './api-request-trust.ts'
+import { AUTH_COOKIE_NAME, PAIRING_TOKEN_PATTERN, PAIRING_TOKEN_REQUIREMENT } from './auth-wire.ts'
+import { isTrustedApiRequest, header, type ApiTrustRequest } from './api-request-trust.ts'
 
 /**
  * Assert one configured pairing token is strong enough to guard network
@@ -19,7 +19,7 @@ import { classifyApiRequest, header, type ApiTrustRequest } from './api-request-
  */
 export function assertPairingToken(token: string): void {
   if (PAIRING_TOKEN_PATTERN.test(token)) return
-  throw new Error('client-connection: pairingToken must be at least 16 characters of A-Za-z0-9_-')
+  throw new Error(`client-connection: pairingToken must be ${PAIRING_TOKEN_REQUIREMENT}`)
 }
 
 /** Every token the request presents: the Bearer authorization plus each `dsh_auth` cookie value. */
@@ -65,7 +65,7 @@ export function admitApiRequest(
   pairingToken: string | undefined,
   peerIsLoopback: boolean,
 ): boolean {
-  if (classifyApiRequest(request, trustedHosts) === 'refused') return false
+  if (!isTrustedApiRequest(request, trustedHosts)) return false
   if (peerIsLoopback) return true
   return pairingToken !== undefined
     && presentedTokens(request.headers).some(presented => tokenMatches(presented, pairingToken))

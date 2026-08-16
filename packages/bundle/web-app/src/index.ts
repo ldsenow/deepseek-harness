@@ -174,7 +174,8 @@ export function apply(ctx: Context, config: Config): void {
       const lanCandidate = runtime.lanAddresses[0]
       const { port, scheme } = ctx.webServer
       const pairing = runtime.pairingToken === undefined ? '' : `/#auth=${runtime.pairingToken}`
-      console.log(`dsh web: ${localWebUrl(ctx)}${lanCandidate === undefined ? '' : ` (LAN: ${scheme}://${lanCandidate}:${String(port)}${pairing})`}`)
+      const local = `${scheme}://${LOOPBACK_HOST}:${String(port)}`
+      console.log(`dsh web: ${local}${lanCandidate === undefined ? '' : ` (LAN: ${scheme}://${lanCandidate}:${String(port)}${pairing})`}`)
     }
     // This row's own activation can precede a sibling failure. The app owns
     // readiness by waiting for its Loader tree, or prints at once in a

@@ -10,7 +10,7 @@
 import { Command } from 'commander'
 import type { Context } from '@deepseek-ai/cordis'
 import { parseCmdline } from '@deepseek-ai/dsh-cmdline'
-import { PAIRING_TOKEN_PATTERN } from '@deepseek-ai/dsh-client-connection'
+import { PAIRING_TOKEN_PATTERN, PAIRING_TOKEN_REQUIREMENT } from '@deepseek-ai/dsh-client-connection'
 
 /** Stable Cordis plugin name. */
 export const name = 'web-startup'
@@ -60,7 +60,7 @@ function webCommand(): Command {
     .option('--host <host>', 'bind host')
     .option('--port <port>', 'listen port; pass 0 to let the OS pick a free one')
     .option('--trusted-host <authority...>', 'extra authority the /api browser-trust fence accepts (host or host:port; repeatable; requires a pairing token)')
-    .option('--pairing-token-env <name>', 'environment variable holding the pairing token every non-loopback client must present (16+ characters of A-Za-z0-9_-)')
+    .option('--pairing-token-env <name>', `environment variable holding the pairing token every non-loopback client must present (${PAIRING_TOKEN_REQUIREMENT})`)
     .option('--pairing-token <token>', 'the pairing token itself; readable by every local user through the process argument list, so prefer --pairing-token-env')
     .option('--keep-awake', 'hold the platform sleep inhibitor while dsh serves, so idle sleep cannot cut off sessions or paired devices')
     .addHelpText('after', `
@@ -84,15 +84,14 @@ const GENERATE_TOKEN_HINT = 'generate one with: node -e "console.log(require(\'c
  * with no mention of the variable that was empty.
  * @param options - the parsed flag family.
  * @param program - the command, whose `error` exits with a usage message.
- * @param env - the process environment the variable is read from.
  * @returns the token, or undefined when this invocation named neither form.
  */
-function resolvePairingToken(options: WebOptions, program: Command, env: NodeJS.ProcessEnv): string | undefined {
+function resolvePairingToken(options: WebOptions, program: Command): string | undefined {
   if (options.pairingTokenEnv !== undefined && options.pairingToken !== undefined) {
     program.error('error: pass either --pairing-token-env or --pairing-token, not both')
   }
   if (options.pairingTokenEnv === undefined) return options.pairingToken
-  const fromEnv = env[options.pairingTokenEnv]
+  const fromEnv = process.env[options.pairingTokenEnv]
   if (fromEnv === undefined || fromEnv === '') {
     program.error(`error: --pairing-token-env names ${JSON.stringify(options.pairingTokenEnv)}, which is not set; ${GENERATE_TOKEN_HINT}`)
   }
@@ -115,9 +114,9 @@ export function apply(ctx: Context): void {
   const program = webCommand()
   program.action(() => {
     const options = program.opts<WebOptions>()
-    const pairingToken = resolvePairingToken(options, program, process.env)
+    const pairingToken = resolvePairingToken(options, program)
     if (pairingToken !== undefined && !PAIRING_TOKEN_PATTERN.test(pairingToken)) {
-      program.error('error: the pairing token must be at least 16 characters of A-Za-z0-9_-')
+      program.error(`error: the pairing token must be ${PAIRING_TOKEN_REQUIREMENT}`)
     }
     if (options.host === '0.0.0.0' && pairingToken === undefined) {
       program.error(`error: --host 0.0.0.0 exposes remote code execution to the network, so it requires --pairing-token-env; ${GENERATE_TOKEN_HINT}`)
