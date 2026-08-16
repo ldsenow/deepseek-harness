@@ -6,9 +6,9 @@ dsh 浏览器表层组合包。[`cordis.patch.yml`](cordis.patch.yml) 叠加在 
 
 ## LAN 服务：配对 token + TLS
 
-`dsh --profile web --host 0.0.0.0 --pairing-token <token>` 把 GUI 服务到本地网络。不带 `--pairing-token`（或 token 短于 16 个 `A-Za-z0-9_-` 字符，或带 `--trusted-host` 而没有 token）的调用是用法错误：`/api` 表面以本进程身份执行代码，因此每个非回环调用方都必须通过 [connection 插件](../../client/connection/README.md)强制执行的配对 token 认证。绑定所有网络接口同时启用 TLS：`web-tls` 提供方（[`src/tls.ts`](src/tls.ts)，配置为 `{enabled, dir}`）在 `dshHomePath('web-tls')` 下一次性生成自签名证书——SAN 携带回环名加生成时采样的 LAN 地址，有效期十年，密钥文件仅属主可读——并把 PEM 路径交给 webserver 行，因此重启后设备已接受的证书保持不变。打印的 LAN 行就是配对 URL `https://<lan-ip>:<port>/#auth=<token>`：在设备上打开一次即同时接受证书并存下 token，此后直接访问裸权威即可。回环绑定不提供 TLS 路径，本机服务保持明文 HTTP。
+`dsh --profile web --host 0.0.0.0 --pairing-token <token>` 把 GUI 服务到本地网络；`--host 0.0.0.0` 或 `--trusted-host` 不带有效 token 是用法错误，因为 [connection 插件](../../client/connection/README.md)不会放行任何非回环调用方。绑定所有网络接口同时启用 TLS：`web-tls` 提供方（[`src/tls.ts`](src/tls.ts)，配置为 `{enabled, dir}`）在 `dshHomePath('web-tls')` 下一次性生成自签名证书（SAN：回环名加生成时采样的 LAN 地址；十年有效期；密钥仅属主可读），并把 PEM 路径交给 webserver 行，因此重启后设备已接受的证书保持不变。打印的 LAN 行就是配对 URL `https://<lan-ip>:<port>/#auth=<token>`，设备打开一次即可。回环绑定不提供 TLS 路径，保持明文 HTTP。
 
-`--keep-awake` 在进程生命周期内持有平台自己的睡眠抑制器（`web-keep-awake`，[`src/keep-awake.ts`](src/keep-awake.ts)，配置为 `{enabled}`）：macOS 上是 `caffeinate -i`，Linux 上是 `systemd-inhibit --what=sleep:idle --mode=block`，Windows 上是持有 `SetThreadExecutionState` 的 PowerShell 子进程——子进程或 dsh 进程一死锁即自动释放。抑制器无法启动时激活报错，因此要求保持唤醒的调用绝不悄悄在没有抑制器的情况下继续服务；抑制器之后死掉只记录警告，服务继续。子进程使用剔除凭据的环境运行。
+`--keep-awake` 在进程生命周期内持有平台的睡眠抑制器（`web-keep-awake`，[`src/keep-awake.ts`](src/keep-awake.ts)，配置为 `{enabled}`）：macOS 上是 `caffeinate -i`，Linux 上是 `systemd-inhibit --what=sleep:idle --mode=block`，Windows 上是持有 `SetThreadExecutionState` 的 PowerShell 子进程，各自在子进程或 dsh 进程死亡时释放。抑制器无法启动时激活报错；之后死掉则只记录警告，服务继续。子进程使用剔除凭据的环境运行。
 
 ## 模型体验
 
