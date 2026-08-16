@@ -6,6 +6,7 @@ import { injectBootTheme } from '../src/boot-theme.ts'
 import type { ThemePreference } from '../src/theme-settings.ts'
 
 const DARK_ATTRIBUTE = 'data-ds-dark-theme'
+const NONCE = 'test-nonce'
 
 function mockSystemDark(matches: boolean): void {
   vi.stubGlobal('matchMedia', vi.fn(() => ({ matches }) as MediaQueryList))
@@ -15,8 +16,8 @@ function executeBootstrap(
   preference?: ThemePreference,
   html = '<html><body><div id="root"></div><script type="module"></script></body></html>',
 ): string {
-  const injected = injectBootTheme(html, preference)
-  const source = /<script>([\s\S]*?)<\/script>/.exec(injected)?.[1]
+  const injected = injectBootTheme(html, NONCE, preference)
+  const source = /<script nonce="[^"]*">([\s\S]*?)<\/script>/.exec(injected)?.[1]
   if (source === undefined) throw new Error('theme bootstrap script missing')
   runInNewContext(source, { document, matchMedia: globalThis.matchMedia })
   return injected
@@ -33,8 +34,11 @@ describe('theme boot index transform', () => {
   it('runs immediately inside the body before the shell mount', () => {
     mockSystemDark(false)
     const html = executeBootstrap('dark', '<html><body class="app"><div id="root"></div></body></html>')
-    expect(html.indexOf('<script>')).toBeGreaterThan(html.indexOf('<body class="app">'))
-    expect(html.indexOf('<script>')).toBeLessThan(html.indexOf('<div id="root">'))
+    expect(html.indexOf('<script ')).toBeGreaterThan(html.indexOf('<body class="app">'))
+    expect(html.indexOf('<script ')).toBeLessThan(html.indexOf('<div id="root">'))
+    // The tag carries the response nonce, or a policy naming it refuses to run
+    // the bootstrap and the page paints unthemed before the shell mounts.
+    expect(html).toContain(`<script nonce="${NONCE}">`)
     expect(document.documentElement.style.colorScheme).toBe('dark')
     expect(document.body.hasAttribute(DARK_ATTRIBUTE)).toBe(true)
   })
@@ -65,7 +69,7 @@ describe('theme boot index transform', () => {
   })
 
   it('appends the script to a body-less fragment', () => {
-    const html = injectBootTheme('<main>loading</main>', 'dark')
-    expect(html.startsWith('<main>loading</main><script>')).toBe(true)
+    const html = injectBootTheme('<main>loading</main>', NONCE, 'dark')
+    expect(html.startsWith(`<main>loading</main><script nonce="${NONCE}">`)).toBe(true)
   })
 })

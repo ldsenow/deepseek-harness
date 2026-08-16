@@ -13,6 +13,7 @@
 
 import type { ServerResponse } from 'node:http'
 import { readFile, realpath } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
 import { realpathSync } from 'node:fs'
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -52,11 +53,11 @@ const MIME: Record<string, string> = {
  * @param distRoot - absolute dist root directory (resolved by the caller).
  * @param distIndex - absolute path of index.html inside distRoot.
  * @param renderIndex - produces the index.html body (index-tap injection) for
- * `/` and every SPA fallback.
+ * `/` and every SPA fallback, given the response's script nonce.
  */
 export async function serveStatic(
   pathname: string, res: ServerResponse, distRoot: string, distIndex: string,
-  renderIndex: () => Promise<string>,
+  renderIndex: (nonce: string) => Promise<string>,
 ): Promise<void> {
   const target = resolve(normalize(join(distRoot, pathname)))
   // Traversal rejection: the target must be distRoot itself (`/`) or stay under
@@ -68,8 +69,17 @@ export async function serveStatic(
     return
   }
   const serveIndex = async (): Promise<void> => {
-    const body = await renderIndex()
-    res.writeHead(200, { 'content-type': MIME['.html'] })
+    // One nonce per document: the taps stamp it on the scripts they inject, and
+    // the policy admits exactly those. Reusing a nonce across responses would
+    // let an injection that once observed it stay executable.
+    const nonce = randomBytes(16).toString('base64')
+    const body = await renderIndex(nonce)
+    res.writeHead(200, {
+      'content-type': MIME['.html'],
+      'content-security-policy': contentSecurityPolicy(nonce),
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': 'no-referrer',
+    })
     res.end(body)
   }
   if (target === distRoot || target === distIndex) {
@@ -99,13 +109,59 @@ export async function serveStatic(
     const body = await readFile(resolved)
     // Extension of the request path, not of the link destination: what the
     // dist publishes under a name is what that name means to the client.
-    res.writeHead(200, { 'content-type': MIME[extname(target)] ?? 'application/octet-stream' })
+    res.writeHead(200, {
+      'content-type': MIME[extname(target)] ?? 'application/octet-stream',
+      'x-content-type-options': 'nosniff',
+    })
     res.end(body)
   } catch {
     // Miss (EISDIR, or a file removed between realpath and read) falls back to
     // index.html with 200 (SPA routing).
     await serveIndex()
   }
+}
+
+/**
+ * The Content-Security-Policy every index response carries. It is the last
+ * line of defence for this origin, which matters more than usual on two
+ * counts: the page holds the pairing token, and on the host machine it is
+ * itself a loopback peer, so script running here reaches the configuration
+ * plane a paired remote device is denied. The harness also serves third-party
+ * client plugin bundles into this origin by design, so "only our own code
+ * runs here" is a property the policy has to state rather than assume.
+ *
+ * Each directive earns its value:
+ * - `script-src 'self' 'nonce-…'` admits the dist bundles and the two scripts
+ *   the index taps inject, and nothing else — an injected `<script>` or event
+ *   handler cannot execute. `'unsafe-eval'` is required, not incidental: the
+ *   client code runner evaluates model-authored code with `new Function`, and
+ *   that capability is the product, so the policy admits it and relies on the
+ *   nonce to keep attacker markup from reaching it.
+ * - `style-src` allows inline: shiki and KaTeX emit `style` attributes, which
+ *   no nonce can cover.
+ * - `img-src` allows remote http(s) because markdown renders remote images,
+ *   plus `data:`/`blob:` for attachments the client materializes itself.
+ * - `connect-src 'self'` keeps fetches and the WebSocket downlinks on this
+ *   origin, which is what closes the exfiltration path images leave open.
+ * - `object-src`, `base-uri`, `frame-ancestors`, and `form-action` are shut:
+ *   this page embeds no plugins, rebases no URLs, is framed by nobody, and
+ *   submits no forms.
+ * @param nonce - this response's script nonce.
+ * @returns the policy header value.
+ */
+function contentSecurityPolicy(nonce: string): string {
+  return [
+    "default-src 'self'",
+    `script-src 'self' 'unsafe-eval' 'nonce-${nonce}'`,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https: http:",
+    "font-src 'self' data:",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "frame-ancestors 'none'",
+    "form-action 'none'",
+  ].join('; ')
 }
 
 /**
@@ -130,8 +186,8 @@ export function apply(ctx: Context, config: Config): void {
   // dist fails the load here instead of answering the first request.
   const distIndex = realpathSync(config.distIndex)
   const distRoot = dirname(distIndex)
-  const renderIndex = async (): Promise<string> =>
-    ctx.webServer.applyIndexTaps(await readFile(distIndex, 'utf8'))
+  const renderIndex = async (nonce: string): Promise<string> =>
+    ctx.webServer.applyIndexTaps(await readFile(distIndex, 'utf8'), nonce)
   ctx.effect(() => ctx.webServer.registerFallback(async (req, res) => {
     // Non-GET/HEAD without a matching named route is 405 (fallback-only
     // semantics: named routes own their method handling).

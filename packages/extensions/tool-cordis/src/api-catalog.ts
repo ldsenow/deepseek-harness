@@ -2078,15 +2078,15 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the disposer releasing the seat.',
       },
       {
-        signature: 'tapIndex(transform: (html: string) => string): () => void',
+        signature: 'tapIndex(transform: IndexTap): () => void',
         description: 'Register an index.html transform, applied by the fallback owner to every index response (applyIndexTaps) in registration order.',
-        parameters: [{ name: 'transform', description: 'pure html-to-html function.' }],
+        parameters: [{ name: 'transform', description: 'pure html-to-html function; see {@link IndexTap} for the nonce obligation.' }],
         returns: 'the disposer removing the transform.',
       },
       {
-        signature: 'applyIndexTaps(html: string): string',
+        signature: 'applyIndexTaps(html: string, nonce: string): string',
         description: 'Run an index.html body through the registered taps in registration order — called by the fallback owner on every index response it renders.',
-        parameters: [{ name: 'html', description: 'the raw index.html body.' }],
+        parameters: [{ name: 'html', description: 'the raw index.html body.' }, { name: 'nonce', description: 'the response\'s script nonce, forwarded to every tap.' }],
         returns: 'the transformed body.',
       },
     ],
@@ -3156,6 +3156,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'InboxTarget',
     declaration: 'export type InboxTarget = \'next-turn\' | \'next-step\';',
+  },
+  {
+    name: 'IndexTap',
+    declaration: 'export type IndexTap = (html: string, nonce: string) => string;',
   },
   {
     name: 'InvariantFailure',

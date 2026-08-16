@@ -163,11 +163,12 @@ function graphRow(id: string, rev: string, injectEdges: string[] | undefined, im
  * the JSON so plugin-controlled strings cannot break out of the script element.
  * @param html - the index.html source.
  * @param graph - the composed entry graph.
+ * @param nonce - the response's script nonce, carried on the injected tag.
  * @returns the html with the graph script injected.
  */
-export function injectBootManifest(html: string, graph: WebBootGraph): string {
+export function injectBootManifest(html: string, graph: WebBootGraph, nonce: string): string {
   const json = JSON.stringify(graph).replaceAll('<', '\\u003c')
-  const script = `<script>window.__DSH_BOOT__ = ${json}</script>`
+  const script = `<script nonce="${nonce}">window.__DSH_BOOT__ = ${json}</script>`
   const head = html.indexOf('<head>')
   if (head !== -1) return `${html.slice(0, head + 6)}${script}${html.slice(head + 6)}`
   // Headless fixture pages may lack <head>; prepending keeps the read-before-shell ordering.
@@ -243,7 +244,7 @@ export class ClientModuleRegistry extends Service {
       'client-modules: bundle route',
     )
     ctx.effect(
-      () => ctx.webServer.tapIndex(html => injectBootManifest(html, this.composed)),
+      () => ctx.webServer.tapIndex((html, nonce) => injectBootManifest(html, this.composed, nonce)),
       'client-modules: boot manifest injection',
     )
   }

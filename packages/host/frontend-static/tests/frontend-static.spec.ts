@@ -73,6 +73,11 @@ async function loadComposition(): Promise<Context> {
   return context
 }
 
+/** GET one path and hand back the whole Response, for header assertions. */
+async function requestFull(port: number, path: string): Promise<Response> {
+  return fetch(`http://127.0.0.1:${String(port)}${path}`)
+}
+
 /** GET (by default) one path against the running server; returns status, content-type, and a body prefix. */
 async function request(port: number, path: string, init?: RequestInit): Promise<{ status: number; type: string | null; body: string }> {
   const response = await fetch(`http://127.0.0.1:${String(port)}${path}`, init)
@@ -117,6 +122,29 @@ describe('real Loader composition', () => {
     }
     untap()
     expect((await request(port, '/')).body).not.toContain('__T__')
+
+    // Every document carries the policy, and the nonce in the header is the one
+    // the taps stamped — a mismatch would leave the injected boot scripts
+    // blocked and the shell without its manifest.
+    const document_ = await requestFull(port, '/')
+    const policy = document_.headers.get('content-security-policy')
+    expect(policy).toContain("object-src 'none'")
+    expect(policy).toContain("connect-src 'self'")
+    expect(policy).toContain("frame-ancestors 'none'")
+    expect(document_.headers.get('x-content-type-options')).toBe('nosniff')
+    const headerNonce = /'nonce-([^']+)'/.exec(policy ?? '')?.[1]
+    expect(headerNonce).toBeDefined()
+    const tapped = server.tapIndex((html, nonce) => html.replace('<head>', `<head><script nonce="${nonce}">1</script>`))
+    const withScript = await requestFull(port, '/')
+    const served = await withScript.text()
+    const servedNonce = /'nonce-([^']+)'/.exec(withScript.headers.get('content-security-policy') ?? '')?.[1]
+    expect(served).toContain(`<script nonce="${String(servedNonce)}">`)
+    // A fresh nonce per response: one leaked from an earlier page must not keep
+    // working on the next.
+    expect(servedNonce).not.toBe(headerNonce)
+    tapped()
+    // Assets are not documents, but they still must not be content-sniffed.
+    expect((await requestFull(port, '/app.js')).headers.get('x-content-type-options')).toBe('nosniff')
 
     // Traversal outside the dist root is 403; non-GET/HEAD is 405.
     expect((await request(port, '/..%2f..%2fetc%2fpasswd')).status).toBe(403)

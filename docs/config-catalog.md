@@ -793,7 +793,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/host/frontend-static/src/index.ts:29`](../packages/host/frontend-static/src/index.ts)
+Source: [`packages/host/frontend-static/src/index.ts:30`](../packages/host/frontend-static/src/index.ts)
 
 <a id="deepseek-aidsh-host-webserver"></a>
 
@@ -813,7 +813,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/host/webserver/src/index.ts:47`](../packages/host/webserver/src/index.ts)
+Source: [`packages/host/webserver/src/index.ts:56`](../packages/host/webserver/src/index.ts)
 
 <a id="deepseek-aidsh-invariants"></a>
 
