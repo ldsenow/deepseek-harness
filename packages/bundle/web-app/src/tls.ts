@@ -65,7 +65,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const certPath = join(config.dir, 'cert.pem')
   const keyPath = join(config.dir, 'key.pem')
   if (!existsSync(certPath) || !existsSync(keyPath)) {
-    mkdirSync(config.dir, { recursive: true })
+    // Owner-only on POSIX so the private key's directory is not world-traversable
+    // on a shared host; Windows ACLs ignore mode, matching other dsh-home dirs.
+    mkdirSync(config.dir, { recursive: true, mode: 0o700 })
     const pems = await generate([{ name: 'commonName', value: 'dsh' }], {
       notAfterDate: new Date(Date.now() + CERT_VALIDITY_MS),
       keySize: 2048,

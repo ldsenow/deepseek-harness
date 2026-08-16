@@ -16,7 +16,7 @@ export const AUTH_STORAGE_KEY = 'dsh.pairingToken'
 
 /** The globals the bootstrap reads, typed for environments where any may be absent. */
 interface BrowserAuthGlobals {
-  location?: { hash: string; pathname: string; search: string }
+  location?: { hash: string; pathname: string; search: string; protocol: string }
   localStorage?: { getItem(key: string): string | null; setItem(key: string, value: string): void }
   document?: { cookie: string }
   history?: { replaceState(data: unknown, unused: string, url?: string): void }
@@ -43,5 +43,8 @@ export function bootstrapAuthToken(): void {
   }
   const token = storage.getItem(AUTH_STORAGE_KEY)
   if (token === null || globals.document === undefined) return
-  globals.document.cookie = `${AUTH_COOKIE_NAME}=${token}; path=/; SameSite=Strict`
+  // Secure on an https page (every network deployment serves TLS), so the
+  // token cookie never rides a plaintext request; loopback http keeps working.
+  const secure = pageLocation.protocol === 'https:' ? '; Secure' : ''
+  globals.document.cookie = `${AUTH_COOKIE_NAME}=${token}; path=/; SameSite=Strict${secure}`
 }
