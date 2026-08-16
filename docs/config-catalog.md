@@ -406,13 +406,13 @@ export interface ConnectionConfig {
    */
   trustedHosts?: string[]
   /**
-   * Pairing token every non-loopback /api request must present — as the
-   * `dsh_auth` cookie the browser client sets after opening a
-   * `#auth=<token>` pairing link, or an `Authorization: Bearer` header. At
+   * Pairing token every /api request from a non-loopback socket peer must
+   * present — as the `dsh_auth` cookie the browser client sets after opening
+   * a `#auth=<token>` pairing link, or an `Authorization: Bearer` header. At
    * least 16 characters of `A-Za-z0-9_-`; anything else fails the load.
    * Required together with a non-empty `trustedHosts`: a declared authority
    * without a token could admit no request, so that combination also fails
-   * the load. Loopback callers never need it.
+   * the load. A loopback peer never needs it.
    */
   pairingToken?: string
   /** Maximum buffered JSON body for every `/api` request. */

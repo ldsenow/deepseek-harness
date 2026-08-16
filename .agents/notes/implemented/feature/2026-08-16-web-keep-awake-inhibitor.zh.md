@@ -10,7 +10,7 @@ Status: implemented
 
 ## 决定
 
-`dsh --profile web --keep-awake` 挂载 `web-keep-awake` 插件（`@deepseek-ai/dsh-web-app/keep-awake`，配置为 `{enabled}`），在插件生命周期内持有一个平台自有的抑制器子进程：macOS 上是 `caffeinate -i`，Linux 上是 `systemd-inhibit --what=sleep:idle --mode=block sleep infinity`，Windows 上是持有 `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` 的 PowerShell 子进程。委托给 OS 设施让释放变得无条件：锁随子进程死亡而消失，子进程随 dsh 死亡而消失，因此任何崩溃路径都不可能留下一台永不睡眠的机器。激活会等待子进程的 `spawn` 并在失败时报错——要求保持唤醒的调用绝不悄悄在没有抑制器的情况下继续服务；抑制器之后死掉只记录警告，因为失去抑制器不能拖垮服务。dispose（资源释放）杀死子进程并等待其退出（按[防御模式](../../../../docs/defensive-patterns.md)达到完全停稳），子进程在 `scrubbedParentEnv()` 下运行，harness 凭据永远不会到达它。
+`dsh --profile web --keep-awake` 挂载 `web-keep-awake` 插件（`@deepseek-ai/dsh-web-app/keep-awake`，配置为 `{enabled}`），在插件生命周期内持有一个平台自有的抑制器子进程：macOS 上是 `caffeinate -i`，Linux 上是 `systemd-inhibit --what=sleep:idle --mode=block sleep infinity`，Windows 上是持有 `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` 的 PowerShell 子进程。委托给 OS 让锁不落在 dsh 自身的状态里：由子进程持有，子进程退出时 OS 释放它。dispose（资源释放）杀死子进程并等待其退出（按[防御模式](../../../../docs/defensive-patterns.md)达到完全停稳）。被强行结束的 dsh 进程（`SIGKILL`、断电）不会执行 dispose，因此子进程成为孤儿并继续持有抑制器，直到它被杀死或机器重启。激活会等待子进程的 `spawn` 并在失败时报错，因此要求保持唤醒的调用不会在没有抑制器的情况下继续服务；子进程之后退出则记录警告，服务继续。子进程在 `scrubbedParentEnv()` 下运行。
 
 ## 考虑过的替代方案
 

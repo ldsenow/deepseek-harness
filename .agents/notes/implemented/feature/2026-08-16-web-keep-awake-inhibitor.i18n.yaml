@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-16-web-keep-awake-inhibitor.md
-2026-08-16-web-keep-awake-inhibitor.md: 3d554fc4334053351a46e4e1e14ab03bb5a1175a
-2026-08-16-web-keep-awake-inhibitor.zh.md: 874d4b02374be1d0b2e61514e70d9c886dde6005
+2026-08-16-web-keep-awake-inhibitor.md: 6d9055263a37550cba75f4a336d5fc80034467ab
+2026-08-16-web-keep-awake-inhibitor.zh.md: f76cf3f505d85fb8754e1bbef292b4c62f68ba97
