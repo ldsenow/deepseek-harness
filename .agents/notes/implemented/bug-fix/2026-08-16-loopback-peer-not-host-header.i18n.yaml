@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-16-loopback-peer-not-host-header.md
+2026-08-16-loopback-peer-not-host-header.md: d3fce29e35361ddba6c6b6c51d4f24d63ca012cd
+2026-08-16-loopback-peer-not-host-header.zh.md: f249800b9c1b1d7cdf4af6c2f2c9a7674bec51c6

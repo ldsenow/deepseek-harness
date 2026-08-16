@@ -35,24 +35,37 @@ function fakeHttpServer(
 }
 
 /** Bodyless GET carrying the given headers (enough for the trust fence + bridge). */
-function fakeRequest(headers: Record<string, string>, url = `${API_PATH}/session.list`): IncomingMessage {
+/** A non-loopback peer literal: what the kernel reports for a real LAN client. */
+const LAN_PEER = '192.168.1.5'
+
+/**
+ * Attach a fake socket whose remoteAddress drives the loopback-peer decision.
+ * The admission fence reads this, never the Host header — default loopback so
+ * existing local cases stay tokenless; remote cases pass a LAN literal.
+ */
+function withPeer(request: IncomingMessage, remoteAddress: string): IncomingMessage {
+  Object.assign(request, { socket: { remoteAddress } })
+  return request
+}
+
+function fakeRequest(headers: Record<string, string>, url = `${API_PATH}/session.list`, remoteAddress = '127.0.0.1'): IncomingMessage {
   const request = Readable.from([]) as unknown as IncomingMessage
   Object.assign(request, { url, method: 'GET', headers })
-  return request
+  return withPeer(request, remoteAddress)
 }
 
 /** JSON POST carrying a complete client-request envelope. */
-function fakePost(headers: Record<string, string>, url: string, body: unknown): IncomingMessage {
+function fakePost(headers: Record<string, string>, url: string, body: unknown, remoteAddress = '127.0.0.1'): IncomingMessage {
   const request = Readable.from([Buffer.from(JSON.stringify(body))]) as unknown as IncomingMessage
   Object.assign(request, { url, method: 'POST', headers: { 'content-type': 'application/json', ...headers } })
-  return request
+  return withPeer(request, remoteAddress)
 }
 
 /** Raw POST for malformed-body and media-type boundary cases. */
-function fakeRawPost(headers: Record<string, string>, url: string, body: string): IncomingMessage {
+function fakeRawPost(headers: Record<string, string>, url: string, body: string, remoteAddress = '127.0.0.1'): IncomingMessage {
   const request = Readable.from([Buffer.from(body)]) as unknown as IncomingMessage
   Object.assign(request, { url, method: 'POST', headers })
-  return request
+  return withPeer(request, remoteAddress)
 }
 
 /** Response recorder compatible with both the fence's short-circuit and the bridge. */
@@ -169,15 +182,15 @@ describe('connection node half', () => {
     await dispose()
   })
 
-  it('pins privileged methods to loopback even for a declared, authenticated trusted authority', async () => {
+  it('pins privileged methods to a loopback peer even for a declared, authenticated remote authority', async () => {
     const { routes, dispose } = await mounted({ trustedHosts: ['harness.example'], pairingToken: AUTH_TOKEN })
     // The privileged set: native dialogs plus the whole settings/credential
     // configuration plane, reads included, plus the one method that makes the
-    // host fetch a caller-chosen URL. The same declared authority reaches
-    // ordinary reads (carrier-level 404 from the empty proxy proves the fence
-    // passed), but each privileged method stays loopback-only and 403s —
-    // every request below presents the valid pairing token, so the pin, not
-    // missing authentication, is what denies.
+    // host fetch a caller-chosen URL. This remote authority (LAN peer) presents
+    // the valid pairing token and reaches ordinary reads (carrier-level 404
+    // from the empty proxy proves admission passed), but each privileged method
+    // stays pinned to a loopback socket peer and 403s — the pin, not missing
+    // authentication, is what denies.
     for (const method of [
       'host.pickDirectory', 'host.openPath',
       'settings.describe', 'settings.openDocument', 'settings.update', 'settings.replace', 'settings.mutate',
@@ -190,15 +203,20 @@ describe('connection node half', () => {
     ]) {
       const denied = fakeResponse()
       await routes[0]!.handler(
-        fakeRequest(authed({ host: 'harness.example' }), `${API_PATH}/${method}`),
+        fakeRequest(authed({ host: 'harness.example' }), `${API_PATH}/${method}`, LAN_PEER),
         denied.response,
       )
       expect(denied.state.status).toBe(403)
       expect(denied.state.body).toBe('forbidden')
     }
     const read = fakeResponse()
-    await routes[0]!.handler(fakeRequest(authed({ host: 'harness.example' })), read.response)
+    await routes[0]!.handler(fakeRequest(authed({ host: 'harness.example' }), `${API_PATH}/session.list`, LAN_PEER), read.response)
     expect(read.state.status).not.toBe(403)
+    // The same privileged method from a genuine loopback peer IS allowed
+    // (404 from the empty proxy), tokenless — the local machine owns itself.
+    const local = fakeResponse()
+    await routes[0]!.handler(fakeRequest({ host: '127.0.0.1:3080' }, `${API_PATH}/settings.describe`), local.response)
+    expect(local.state.status).toBe(404)
     await dispose()
   })
 
@@ -209,34 +227,49 @@ describe('connection node half', () => {
     const loopback = fakeResponse()
     await routes[0]!.handler(fakeRequest({ host: '127.0.0.1:3080' }), loopback.response)
     expect(loopback.state.status).toBe(404)
-    // An all-interfaces composition derives port-less LAN IP literals; the
-    // pairing cookie the client sets after pairing admits them on any port.
+    // An all-interfaces composition derives port-less LAN IP literals; a
+    // remote (LAN) peer presenting the pairing cookie is admitted on any port.
     const lan = fakeResponse()
-    await routes[0]!.handler(fakeRequest(authed({ host: '192.168.1.5:3080' })), lan.response)
+    await routes[0]!.handler(fakeRequest(authed({ host: '192.168.1.5:3080' }), `${API_PATH}/session.list`, LAN_PEER), lan.response)
     expect(lan.state.status).toBe(404)
     // The same LAN authority without the token stops at the admission fence,
     // on the HTTP route and the WebSocket upgrade alike.
     const anonymous = fakeResponse()
-    await routes[0]!.handler(fakeRequest({ host: '192.168.1.5:3080' }), anonymous.response)
+    await routes[0]!.handler(fakeRequest({ host: '192.168.1.5:3080' }, `${API_PATH}/session.list`, LAN_PEER), anonymous.response)
     expect(anonymous.state).toMatchObject({ status: 403, body: 'forbidden' })
     const socket = new PassThrough()
     const chunks: Buffer[] = []
     socket.on('data', (chunk: Buffer) => { chunks.push(chunk) })
     const ended = once(socket, 'end')
-    await upgrades[0]!.handler(fakeRequest({ host: '192.168.1.5:3080' }, MUX_EVENTS_PATH), socket, Buffer.alloc(0))
+    await upgrades[0]!.handler(fakeRequest({ host: '192.168.1.5:3080' }, MUX_EVENTS_PATH, LAN_PEER), socket, Buffer.alloc(0))
     await ended
     expect(Buffer.concat(chunks).toString()).toContain('HTTP/1.1 403 Forbidden')
     // A wrong token is refused like a missing one.
     const wrong = fakeResponse()
-    await routes[0]!.handler(fakeRequest({ host: '192.168.1.5:3080', cookie: 'dsh_auth=not-the-configured-token' }), wrong.response)
+    await routes[0]!.handler(fakeRequest({ host: '192.168.1.5:3080', cookie: 'dsh_auth=not-the-configured-token' }, `${API_PATH}/session.list`, LAN_PEER), wrong.response)
     expect(wrong.state.status).toBe(403)
+    // SECURITY REGRESSION: a remote peer forging a loopback Host must NOT be
+    // admitted tokenless — loopback trust is the socket peer, not the header.
+    for (const forged of ['127.0.0.1:3080', 'localhost:3080', '[::1]:3080']) {
+      const spoof = fakeResponse()
+      await routes[0]!.handler(fakeRequest({ host: forged }, `${API_PATH}/session.list`, LAN_PEER), spoof.response)
+      expect([forged, spoof.state.status]).toEqual([forged, 403])
+    }
+    // The same forged loopback Host on the WebSocket upgrade is rejected too.
+    const wsSocket = new PassThrough()
+    const wsChunks: Buffer[] = []
+    wsSocket.on('data', (chunk: Buffer) => { wsChunks.push(chunk) })
+    const wsEnded = once(wsSocket, 'end')
+    await upgrades[0]!.handler(fakeRequest({ host: '127.0.0.1:3080' }, MUX_EVENTS_PATH, LAN_PEER), wsSocket, Buffer.alloc(0))
+    await wsEnded
+    expect(Buffer.concat(wsChunks).toString()).toContain('HTTP/1.1 403 Forbidden')
     // Declared public authority, same-origin browser shape, Bearer form (the
-    // non-browser client path).
+    // non-browser client path), from a remote peer.
     const declared = fakeResponse()
     await routes[0]!.handler(fakeRequest({
       host: 'harness.example:3080', origin: 'http://harness.example:3080', 'sec-fetch-site': 'same-origin',
       authorization: `Bearer ${AUTH_TOKEN}`,
-    }), declared.response)
+    }, `${API_PATH}/session.list`, LAN_PEER), declared.response)
     expect(declared.state.status).toBe(404)
     await dispose()
   })
@@ -374,9 +407,10 @@ describe('connection node half', () => {
       async () => ({ ok: true, value: null }),
       { authority: 'loopback' },
     )
-    // The valid pairing token does not soften a loopback-pinned interceptor.
+    // A remote peer with a valid pairing token still cannot reach a
+    // loopback-pinned interceptor — the pin is the socket peer, not the token.
     const loopbackOnly = fakeResponse()
-    await route.handler(fakePost(authed({ host: 'harness.example' }), '/api/goals/create', request), loopbackOnly.response)
+    await route.handler(fakePost(authed({ host: 'harness.example' }), '/api/goals/create', request, LAN_PEER), loopbackOnly.response)
     expect(loopbackOnly.state.status).toBe(403)
     await removeLoopback()
     await fiber.dispose()
@@ -402,7 +436,7 @@ describe('connection node half', () => {
     expect(denied.state).toMatchObject({ status: 403, body: 'forbidden' })
 
     const anonymous = fakeResponse()
-    await route.handler(fakePost({ host: 'harness.example' }, '/rpc/goals/create', {}), anonymous.response)
+    await route.handler(fakePost({ host: 'harness.example' }, '/rpc/goals/create', {}, LAN_PEER), anonymous.response)
     expect(anonymous.state).toMatchObject({ status: 403, body: 'forbidden' })
 
     const methodMismatch = fakeResponse()
@@ -488,7 +522,7 @@ describe('connection node half over a real HTTP server', () => {
     }
   }
 
-  /** One real request; `host` spoofs the authority the way a LAN client's browser would send it. */
+  /** One real request; `host` is the Host header, `headers` any extras. */
   function call(port: number, method: string, host: string, headers: Record<string, string> = {}): Promise<number> {
     return new Promise((resolve, reject) => {
       const request = httpRequest(
@@ -503,44 +537,29 @@ describe('connection node half over a real HTTP server', () => {
     })
   }
 
-  it('answers a declared LAN authority with 403 on every configuration method, over real HTTP', async () => {
-    // The fence's input is a real IncomingMessage parsed by Node from the
-    // wire, not a hand-assembled object: the Host header a LAN browser sends
-    // is exactly what decides loopback-only here, so the boundary is asserted
-    // against the parse the server actually performs. Every non-loopback
-    // request presents the pairing cookie: the pin, not authentication, is
-    // what these assertions prove.
+  it('admits a genuine loopback peer tokenless and still defends it against rebinding, over real HTTP', async () => {
+    // The admission input is a real IncomingMessage whose socket the kernel
+    // filled: connecting over 127.0.0.1 makes req.socket.remoteAddress a real
+    // loopback address, so this asserts the socket-derived loopback decision the
+    // server actually performs — not a hand-set peer. A loopback peer owns the
+    // machine, so it reaches everything tokenless, privileged plane included.
     const { routes, dispose } = await mounted({ trustedHosts: ['harness.example'], pairingToken: AUTH_TOKEN })
     const { port, close } = await serve(routes)
+    const loopbackHost = `127.0.0.1:${String(port)}`
     try {
-      // Reads are as privileged as writes: describe returns the exposed
-      // configuration, and credentials.describe probes arbitrary env-var names.
+      // Privileged, catalog, and ordinary methods all reach the empty proxy's
+      // 404 carrier answer — a real loopback peer is admitted without a token.
       for (const method of [
-        'settings.describe', 'settings.openDocument', 'settings.update', 'settings.replace', 'settings.mutate',
-        'credentials.describe', 'credentials.set', 'credentials.unset',
-        'host.pickDirectory', 'host.openPath',
-        // Carries a draft credential and turns the host into a fetcher for a
-        // URL the caller picked: an anonymous LAN caller must not reach it.
-        'llm.discoverModels',
-        'agentPreset.read', 'agentPreset.copy', 'agentPreset.openDocument', 'agentPreset.remove',
+        'settings.describe', 'credentials.describe', 'host.openPath', 'llm.discoverModels',
+        'agentPreset.read', 'llm.providers', 'session.list',
       ]) {
-        expect([method, await call(port, method, 'harness.example', { cookie: `dsh_auth=${AUTH_TOKEN}` })]).toEqual([method, 403])
+        expect([method, await call(port, method, loopbackHost)]).toEqual([method, 404])
       }
-      // The model catalog stays reachable for the same authority: a LAN
-      // client's model picker needs it, and it carries no key or endpoint
-      // state (404 is the empty proxy's carrier answer — the fence passed).
-      // `agentPreset.list` joins the model catalog for the same reason: ids and
-      // trust only, and a LAN client's preset picker needs it. `select` is
-      // reachable too: `session.create` already takes an `agentPreset`, and the
-      // deployment's own default already carries bash, so pinning the switch
-      // would be a fence beside an open gate.
-      for (const method of ['llm.providers', 'llm.models', 'agentPreset.list', 'agentPreset.select']) {
-        expect([method, await call(port, method, 'harness.example', { cookie: `dsh_auth=${AUTH_TOKEN}` })]).toEqual([method, 404])
-      }
-      // The same catalog read without the pairing token stops at admission.
-      expect(await call(port, 'llm.providers', 'harness.example')).toBe(403)
-      // Loopback reaches everything tokenless, configuration included.
-      expect(await call(port, 'settings.describe', `127.0.0.1:${String(port)}`)).toBe(404)
+      // Rebinding defense still binds a loopback-peer browser: an untrusted
+      // Host (attacker's rebound domain) is refused even from a loopback peer.
+      expect(await call(port, 'session.list', 'evil.example')).toBe(403)
+      // A cross-site marker is refused too, loopback peer notwithstanding.
+      expect(await call(port, 'session.list', loopbackHost, { 'sec-fetch-site': 'cross-site' })).toBe(403)
     } finally {
       await close()
       await dispose()

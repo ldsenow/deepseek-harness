@@ -16,3 +16,24 @@ export function isLoopbackHostname(hostname: string): boolean {
     && parts[0] === '127'
     && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255)
 }
+
+/**
+ * Whether a socket peer address (`req.socket.remoteAddress`) is the loopback
+ * interface: IPv4 `127.0.0.0/8`, IPv6 `::1`, or an IPv4-mapped loopback
+ * (`::ffff:127.x.x.x`). Unlike {@link isLoopbackHostname}, this reads the real
+ * connection origin the kernel reports, which a client cannot forge — the
+ * tokenless loopback exemption and the privileged-method pin depend on it, not
+ * on the client-supplied `Host` header. An undefined address (no socket, a
+ * non-IP transport) is not loopback, so it fails closed to token-required.
+ * @param address - the socket's remote address, or undefined.
+ * @returns true only for a genuine loopback peer.
+ */
+export function isLoopbackAddress(address: string | undefined): boolean {
+  if (address === undefined) return false
+  if (address === '::1') return true
+  const ipv4 = address.startsWith('::ffff:') ? address.slice('::ffff:'.length) : address
+  const parts = ipv4.split('.')
+  return parts.length === 4
+    && parts[0] === '127'
+    && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255)
+}

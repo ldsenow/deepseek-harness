@@ -7,7 +7,7 @@ import { apply } from '../src/client/index.ts'
 const TOKEN = 'browser-pairing-token_01234'
 
 interface FakeGlobals {
-  location?: { hash: string; pathname: string; search: string; hostname: string }
+  location?: { hash: string; pathname: string; search: string; hostname: string; protocol: string }
   localStorage?: { getItem(key: string): string | null; setItem(key: string, value: string): void }
   document?: { cookie: string }
   history?: { replaceState(data: unknown, unused: string, url?: string): void }
@@ -36,7 +36,7 @@ afterEach(() => {
 describe('bootstrapAuthToken', () => {
   it('is a no-op outside a browser (no location or no storage)', () => {
     expect(() => { bootstrapAuthToken() }).not.toThrow()
-    globals.location = { hash: `#auth=${TOKEN}`, pathname: '/', search: '', hostname: '192.168.1.5' }
+    globals.location = { hash: `#auth=${TOKEN}`, pathname: '/', search: '', hostname: '192.168.1.5', protocol: 'https:' }
     expect(() => { bootstrapAuthToken() }).not.toThrow()
   })
 
@@ -44,20 +44,31 @@ describe('bootstrapAuthToken', () => {
     const { data, storage } = fakeStorage()
     const replaced: string[] = []
     const doc = { cookie: '' }
-    globals.location = { hash: `#auth=${TOKEN}`, pathname: '/app', search: '?fixture', hostname: '192.168.1.5' }
+    globals.location = { hash: `#auth=${TOKEN}`, pathname: '/app', search: '?fixture', hostname: '192.168.1.5', protocol: 'https:' }
     globals.localStorage = storage
     globals.document = doc
     globals.history = { replaceState: (_data, _unused, url) => { replaced.push(String(url)) } }
     bootstrapAuthToken()
     expect(data.get(AUTH_STORAGE_KEY)).toBe(TOKEN)
     expect(replaced).toEqual(['/app?fixture'])
+    // https page (every network deployment): the token cookie is Secure.
+    expect(doc.cookie).toBe(`dsh_auth=${TOKEN}; path=/; SameSite=Strict; Secure`)
+  })
+
+  it('omits Secure on a loopback http page so local serving keeps working', () => {
+    const { storage } = fakeStorage({ [AUTH_STORAGE_KEY]: TOKEN })
+    const doc = { cookie: '' }
+    globals.location = { hash: '', pathname: '/', search: '', hostname: '127.0.0.1', protocol: 'http:' }
+    globals.localStorage = storage
+    globals.document = doc
+    bootstrapAuthToken()
     expect(doc.cookie).toBe(`dsh_auth=${TOKEN}; path=/; SameSite=Strict`)
   })
 
   it('preserves unrelated fragment parameters when stripping the token', () => {
     const { storage } = fakeStorage()
     const replaced: string[] = []
-    globals.location = { hash: `#tab=logs&auth=${TOKEN}`, pathname: '/', search: '', hostname: '192.168.1.5' }
+    globals.location = { hash: `#tab=logs&auth=${TOKEN}`, pathname: '/', search: '', hostname: '192.168.1.5', protocol: 'https:' }
     globals.localStorage = storage
     globals.history = { replaceState: (_data, _unused, url) => { replaced.push(String(url)) } }
     bootstrapAuthToken()
@@ -67,7 +78,7 @@ describe('bootstrapAuthToken', () => {
   it('republishes a stored token as the cookie on a fragment-less boot', () => {
     const { storage } = fakeStorage({ [AUTH_STORAGE_KEY]: TOKEN })
     const doc = { cookie: '' }
-    globals.location = { hash: '', pathname: '/', search: '', hostname: '192.168.1.5' }
+    globals.location = { hash: '', pathname: '/', search: '', hostname: '192.168.1.5', protocol: 'https:' }
     globals.localStorage = storage
     globals.document = doc
     bootstrapAuthToken()
@@ -77,14 +88,14 @@ describe('bootstrapAuthToken', () => {
   it('does nothing without a stored token, and survives missing history or document', () => {
     const { storage } = fakeStorage()
     const doc = { cookie: '' }
-    globals.location = { hash: '', pathname: '/', search: '', hostname: '192.168.1.5' }
+    globals.location = { hash: '', pathname: '/', search: '', hostname: '192.168.1.5', protocol: 'https:' }
     globals.localStorage = storage
     globals.document = doc
     bootstrapAuthToken()
     expect(doc.cookie).toBe('')
     // A fragment with neither history nor document still stores the token.
     const second = fakeStorage()
-    globals.location = { hash: `#auth=${TOKEN}`, pathname: '/', search: '', hostname: '192.168.1.5' }
+    globals.location = { hash: `#auth=${TOKEN}`, pathname: '/', search: '', hostname: '192.168.1.5', protocol: 'https:' }
     globals.localStorage = second.storage
     delete globals.document
     delete globals.history
@@ -95,7 +106,7 @@ describe('bootstrapAuthToken', () => {
 
 describe('connection client apply with auth bootstrap', () => {
   it('contains a privacy-mode storage denial and still mounts the handle', async () => {
-    globals.location = { hash: `#auth=${TOKEN}`, pathname: '/', search: '', hostname: '192.168.1.5' }
+    globals.location = { hash: `#auth=${TOKEN}`, pathname: '/', search: '', hostname: '192.168.1.5', protocol: 'https:' }
     globals.localStorage = {
       getItem: () => { throw new Error('storage disabled') },
       setItem: () => { throw new Error('storage disabled') },

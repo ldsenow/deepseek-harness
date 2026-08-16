@@ -11,9 +11,11 @@ import {
   type RpcId as RpcIdType,
   type ServerResponse as RpcServerResponse,
 } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { IncomingMessage } from 'node:http'
 import { bridge, type FetchHandler } from './http-bridge.ts'
-import { isTrustedApiRequest, type ApiTrustRequest } from './api-request-trust.ts'
-import { admitApiRequest } from './api-auth.ts'
+import { isTrustedApiRequest } from './api-request-trust.ts'
+import { admitApiRequest, requestPeerIsLoopback } from './api-auth.ts'
+import { isLoopbackAddress } from './loopback-hostname.ts'
 import { API_PATH } from './api-path.ts'
 import type {
   ConnectionRpcEndpointMatcher,
@@ -85,7 +87,10 @@ export class HostConnectionService extends Service implements HostConnectionHand
         if (endpoint === undefined || interceptor === undefined || !interceptor.matches(endpoint)) {
           return fallback.fetch(request)
         }
-        if (interceptor.options.authority === 'loopback' && !isTrustedApiRequest(request, [])) {
+        // The /api route already ran the Host fence, token admission, and
+        // stamped the peer fact before reaching here, so the loopback pin is
+        // exactly the socket-derived peer-loopback fact — never the Host header.
+        if (interceptor.options.authority === 'loopback' && !requestPeerIsLoopback(request)) {
           return Promise.resolve(new Response('forbidden', { status: 403 }))
         }
         return interceptor.fetchHandler.fetch(request)
@@ -100,9 +105,15 @@ export class HostConnectionService extends Service implements HostConnectionHand
     options: ConnectionRpcHandlerOptions,
   ): () => Promise<void> {
     assertChannel(channel)
-    const admit = options.authority === 'loopback'
-      ? (req: ApiTrustRequest): boolean => isTrustedApiRequest(req, [])
-      : (req: ApiTrustRequest): boolean => admitApiRequest(req, this.trustedHosts, this.pairingToken)
+    const admit = (req: IncomingMessage): boolean => {
+      const peerIsLoopback = isLoopbackAddress(req.socket.remoteAddress)
+      // A loopback-authority channel is pinned to the local machine: the Host
+      // fence (rebinding defense) plus a genuine loopback peer, never a
+      // loopback-looking Host from a remote socket.
+      return options.authority === 'loopback'
+        ? peerIsLoopback && isTrustedApiRequest(req, [])
+        : admitApiRequest(req, this.trustedHosts, this.pairingToken, peerIsLoopback)
+    }
     const fetchHandler = rpcFetchHandler(channel, handler)
     const route: WebRoute = {
       kind: 'prefix',

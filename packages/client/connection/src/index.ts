@@ -7,8 +7,9 @@ import type { WebRoute, WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
 import { toFetchHandler } from '@deepseek-ai/dsh-host-apiproxy'
 import { API_PATH, HOST_EVENTS_PATH, MUX_EVENTS_PATH } from './api-path.ts'
 import { bridge, DEFAULT_MAX_REQUEST_BODY_BYTES } from './http-bridge.ts'
-import { assertTrustedAuthority, isTrustedApiRequest } from './api-request-trust.ts'
-import { admitApiRequest, assertPairingToken } from './api-auth.ts'
+import { assertTrustedAuthority } from './api-request-trust.ts'
+import { admitApiRequest, assertPairingToken, requestPeerIsLoopback, stampPeerLoopback } from './api-auth.ts'
+import { isLoopbackAddress } from './loopback-hostname.ts'
 import { HostConnectionService } from './rpc-host.ts'
 import { rejectWebSocketUpgrade, WebSocketDownlinks } from './websocket-downlink.ts'
 
@@ -137,8 +138,8 @@ const PRIVILEGED_METHODS = new Set([
  * the prefix passes the browser-trust fence and, beyond loopback, pairing-token
  * authentication (DNS-rebinding and cross-site defense —
  * [api-request-trust](./api-request-trust.ts); token admission —
- * [api-auth](./api-auth.ts)); privileged methods additionally pass the fence
- * with an empty trust list, which pins them to loopback.
+ * [api-auth](./api-auth.ts)); privileged methods additionally require a
+ * loopback socket peer, which pins them to the local machine.
  * @param ctx - Host plugin context.
  * @param config - resolved plugin config (schema defaults applied).
  */
@@ -162,9 +163,12 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
       const method = pathname.startsWith(`${API_PATH}/`)
         ? pathname.slice(API_PATH.length + 1)
         : undefined
+      // Privileged methods stay pinned to the local machine: the outer route
+      // handler already ran the Host fence and token admission, so here the pin
+      // is exactly the loopback-peer fact the node layer stamped.
       if (method !== undefined
         && PRIVILEGED_METHODS.has(method)
-        && !isTrustedApiRequest(request, [])) {
+        && !requestPeerIsLoopback(request)) {
         return new Response('forbidden', { status: 403 })
       }
       if (request.method === 'GET' && (pathname === MUX_EVENTS_PATH || pathname === HOST_EVENTS_PATH)) {
@@ -182,11 +186,14 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
     kind: 'prefix',
     path: API_PATH,
     handler: async (req, res) => {
-      if (!admitApiRequest(req, trustedHosts, pairingToken)) {
+      const peerIsLoopback = isLoopbackAddress(req.socket.remoteAddress)
+      if (!admitApiRequest(req, trustedHosts, pairingToken, peerIsLoopback)) {
         res.writeHead(403)
         res.end('forbidden')
         return
       }
+      // Carry the trusted peer fact to the Fetch-side privileged pin.
+      stampPeerLoopback(req.headers, peerIsLoopback)
       await bridge(req, res, fetchHandler, maxRequestBodyBytes)
     },
   }
@@ -201,7 +208,7 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
       apiCtx.effect(() => apiCtx.webServer.registerUpgrade({
         path,
         handler: (req, socket, head) => {
-          if (!admitApiRequest(req, trustedHosts, pairingToken)) {
+          if (!admitApiRequest(req, trustedHosts, pairingToken, isLoopbackAddress(req.socket.remoteAddress))) {
             rejectWebSocketUpgrade(socket)
             return
           }
