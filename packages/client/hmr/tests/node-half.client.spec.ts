@@ -5,6 +5,7 @@
 import { mkdtempSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import { Context } from '@deepseek-ai/cordis'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { WebBootGraph, ClientModuleRegistry } from '@deepseek-ai/dsh-client-modules'
@@ -107,6 +108,50 @@ describe('hmr node half', () => {
     writeFileSync(bundle, 'v3-even-longer')
     await new Promise(resolve => setTimeout(resolve, POLL_MS * 4))
     expect(clientModuleHost.rebuiltCalls).toHaveLength(0)
+  })
+
+  it('serves the reload channel to a loopback peer and refuses every other one', async () => {
+    // The channel carries no admission of its own and each connection lives
+    // until its client closes it, with no cap on how many exist — on a network
+    // bind that is an unauthenticated socket sink. The rebuilding machine is
+    // the only legitimate client, so the peer decides.
+    const bundle = join(dir, 'gated.js')
+    writeFileSync(bundle, 'v1')
+    const routes: WebRoute[] = []
+    const fiber = await mount(fakeClientModuleHost(new Map([['pkg-a', bundle]])), fakeHttpServer(routes))
+    const handler = routes[0]!.handler
+
+    /** Drive the route with one peer address and report what the response did. */
+    const hit = (remoteAddress: string | undefined): { status: number | undefined; streaming: boolean } => {
+      let status: number | undefined
+      let streaming = false
+      const res = {
+        writeHead(code: number, headers?: Record<string, string>) {
+          status = code
+          streaming = headers?.['content-type'] === 'text/event-stream'
+          return this
+        },
+        write() { return true },
+        end() { return this },
+        on() { return this },
+      }
+      // The route answers synchronously; nothing here awaits a stream.
+      void handler(
+        { method: 'GET', socket: { remoteAddress } } as unknown as IncomingMessage,
+        res as unknown as ServerResponse,
+      )
+      return { status, streaming }
+    }
+
+    for (const local of ['127.0.0.1', '::1', '::ffff:127.0.0.1']) {
+      expect([local, hit(local)]).toEqual([local, { status: 200, streaming: true }])
+    }
+    // A LAN peer, an unrecognized address, and a socket with none at all are
+    // all refused before any stream opens.
+    for (const remote of ['192.168.1.5', '10.0.0.9', undefined]) {
+      expect([remote, hit(remote)]).toEqual([remote, { status: 403, streaming: false }])
+    }
+    await fiber.dispose()
   })
 
   it('follows graph changes: rows added after activation get watched', async () => {

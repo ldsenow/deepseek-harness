@@ -9,7 +9,7 @@ import { API_PATH, HOST_EVENTS_PATH, MUX_EVENTS_PATH } from './api-path.ts'
 import { bridge, DEFAULT_MAX_REQUEST_BODY_BYTES } from './http-bridge.ts'
 import { assertTrustedAuthority } from './api-request-trust.ts'
 import { admitApiRequest, assertPairingToken } from './api-auth.ts'
-import { isLoopbackAddress } from './loopback-hostname.ts'
+import { isLoopbackAddress } from '@deepseek-ai/dsh-loopback'
 import { HostConnectionService } from './rpc-host.ts'
 import { rejectWebSocketUpgrade, WebSocketDownlinks } from './websocket-downlink.ts'
 

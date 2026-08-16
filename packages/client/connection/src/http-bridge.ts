@@ -4,7 +4,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { isLoopbackAddress } from './loopback-hostname.ts'
+import { isLoopbackAddress } from '@deepseek-ai/dsh-loopback'
 
 /** Default carrier cap for all HTTP RPC bodies: sized for the default
  * aggregate image limit (100 MiB) after base64 expansion plus envelope

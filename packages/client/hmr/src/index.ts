@@ -12,6 +12,7 @@ import { statSync } from 'node:fs'
 import type { ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import { isLoopbackAddress } from '@deepseek-ai/dsh-loopback'
 // Empty type imports carry the clientModuleHost/webServer Context merges.
 import type {} from '@deepseek-ai/dsh-client-modules'
 import type {} from '@deepseek-ai/dsh-host-webserver'
@@ -171,6 +172,16 @@ export function apply(ctx: Context, config: Config): void {
         // global 405 semantics for non-GET hits on this endpoint.
         if (req.method !== 'GET' && req.method !== 'HEAD') {
           res.writeHead(405)
+          res.end()
+          return
+        }
+        // The reload chain serves the machine doing the rebuilding, so it is
+        // held to a loopback peer. This channel carries no admission of its
+        // own, and on a network bind an unauthenticated caller could otherwise
+        // hold sockets open here without limit — each connection lives until
+        // its client closes it, and nothing caps how many exist.
+        if (!isLoopbackAddress(req.socket.remoteAddress)) {
+          res.writeHead(403)
           res.end()
           return
         }

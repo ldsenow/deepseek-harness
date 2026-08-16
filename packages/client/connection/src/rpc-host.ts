@@ -15,7 +15,7 @@ import type { IncomingMessage } from 'node:http'
 import { bridge, type FetchHandler } from './http-bridge.ts'
 import { isTrustedApiRequest } from './api-request-trust.ts'
 import { admitApiRequest } from './api-auth.ts'
-import { isLoopbackAddress } from './loopback-hostname.ts'
+import { isLoopbackAddress } from '@deepseek-ai/dsh-loopback'
 import { API_PATH } from './api-path.ts'
 import type {
   ConnectionRpcEndpointMatcher,

@@ -12,3 +12,4 @@
 | [`retention/`](output-retention/README.md) | 限制保留文本和项集合的大小 |
 | [`atomic-write/`](atomic-write/README.md) | 以原子方式替换文件 |
 | [`native-command/`](native-command/README.md) | 不经 shell 运行宿主原生命令 |
+| [`loopback/`](loopback/README.md) | 判定 URL 权威与 socket peer 是否为回环 |

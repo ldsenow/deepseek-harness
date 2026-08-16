@@ -1497,6 +1497,9 @@ importers:
       '@deepseek-ai/dsh-invariants':
         specifier: workspace:^
         version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-loopback':
+        specifier: workspace:^
+        version: link:../../util/loopback
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
@@ -1522,6 +1525,9 @@ importers:
       '@deepseek-ai/dsh-invariants':
         specifier: workspace:^
         version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-loopback':
+        specifier: workspace:^
+        version: link:../../util/loopback
 
   packages/client/locale:
     dependencies:
@@ -7933,6 +7939,15 @@ importers:
         version: link:../../runtime-diagnostics/invariants
 
   packages/util/launch-environment:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: workspace:^
+        version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-invariants':
+        specifier: workspace:^
+        version: link:../../runtime-diagnostics/invariants
+
+  packages/util/loopback:
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: workspace:^

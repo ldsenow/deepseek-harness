@@ -1,7 +1,7 @@
 /** Shared loopback-hostname semantics for the Host fence and browser UI. */
 
 import { describe, expect, it } from 'vitest'
-import { isLoopbackAddress, isLoopbackHostname } from '../src/loopback-hostname.ts'
+import { isLoopbackAddress, isLoopbackHostname } from '../src/index.ts'
 
 describe('isLoopbackHostname', () => {
   it('accepts localhost, IPv6 loopback, and the whole IPv4 127/8 block', () => {

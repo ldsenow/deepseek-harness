@@ -14,7 +14,7 @@
  */
 
 import type { IncomingHttpHeaders } from 'node:http'
-import { isLoopbackHostname } from './loopback-hostname.ts'
+import { isLoopbackHostname } from '@deepseek-ai/dsh-loopback'
 
 /** The request facts the fence reads from either HTTP representation. */
 export interface ApiTrustRequest {

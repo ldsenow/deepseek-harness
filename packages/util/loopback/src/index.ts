@@ -1,7 +1,10 @@
 /**
- * Browser-safe, zero-dependency loopback classification shared by the `/api`
- * Host fence and the package's `ctx.connection` state. The predicate stays
- * package-internal; client plugins consume the derived state through Cordis.
+ * Browser-safe, zero-dependency loopback classification. Two predicates over
+ * two different inputs, deliberately not interchangeable: a hostname is what a
+ * client claims, a socket peer address is what the kernel observed. Route
+ * owners deciding whether a caller is local read the second one; the first
+ * answers only which authority a URL names.
+ * @module @deepseek-ai/dsh-loopback
  */
 
 /**

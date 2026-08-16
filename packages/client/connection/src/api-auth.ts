@@ -9,7 +9,7 @@
  * upgrades alike), or an `Authorization: Bearer` header for non-browser
  * clients. Only a genuine loopback peer skips the token: a local process
  * already owns the machine this server executes on. Loopback comes from the
- * socket peer address ([isLoopbackAddress](./loopback-hostname.ts)), never the
+ * socket peer address (`isLoopbackAddress`, [dsh-loopback](../../../util/loopback/README.md)), never the
  * client-controlled `Host` header — on an all-interfaces bind any client that
  * can reach the socket may claim `Host: localhost`, so a header-based
  * exemption would be a token bypass. Comparison is constant-time over digests,
@@ -66,7 +66,7 @@ function tokenMatches(presented: string, token: string): boolean {
  * @param request - Node HTTP or Fetch request facts (headers).
  * @param trustedHosts - non-loopback authorities this deployment serves.
  * @param pairingToken - the deployment's pairing token; absent means no non-loopback request is admitted.
- * @param peerIsLoopback - whether the socket peer is loopback ([isLoopbackAddress](./loopback-hostname.ts)).
+ * @param peerIsLoopback - whether the socket peer is loopback (`isLoopbackAddress`).
  * @returns true for an admitted request: Host-fence-accepted and, beyond a loopback peer, authenticated.
  */
 export function admitApiRequest(
