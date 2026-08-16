@@ -89,13 +89,20 @@ function fakeResponse(): { response: ServerResponse; state: { status?: number; b
 
 /** The deployment pairing token every non-loopback request must present. */
 const AUTH_TOKEN = 'unit-pairing-token_A-1234'
+/** Reference the plugin resolves through the credentials seam. */
+const TOKEN_REF = 'DSH_TEST_PAIRING_TOKEN'
+
+/** Minimal credentials seam returning the deployment token for its one reference. */
+function fakeCredentials(value = AUTH_TOKEN) {
+  return { resolve: async (ref: string) => (ref === TOKEN_REF ? { value, source: 'environment' } : undefined) }
+}
 
 /** Headers of an authenticated request: the pairing cookie beside the caller's own headers. */
 function authed(headers: Record<string, string>): Record<string, string> {
   return { cookie: `dsh_auth=${AUTH_TOKEN}`, ...headers }
 }
 
-async function mounted(config?: { trustedHosts?: string[]; pairingToken?: string }): Promise<{
+async function mounted(config?: { trustedHosts?: string[]; pairingTokenEnv?: string }): Promise<{
   routes: WebRoute[]
   upgrades: WebUpgradeRoute[]
   dispose: () => Promise<void>
@@ -105,13 +112,14 @@ async function mounted(config?: { trustedHosts?: string[]; pairingToken?: string
   const upgrades: WebUpgradeRoute[] = []
   ctx.provide('webServer', fakeHttpServer(routes, upgrades) as WebServer)
   ctx.provide('apiProxy', {} as unknown as ApiProxy)
+  ctx.provide('credentials', fakeCredentials() as never)
   const fiber = ctx.plugin({ inject: [...inject], apply }, config)
   await fiber.await()
   return { routes, upgrades, dispose: () => fiber.dispose() }
 }
 
 describe('connection node half', () => {
-  it('fails loud when the carrier cap cannot hold the configured image batch', () => {
+  it('fails loud when the carrier cap cannot hold the configured image batch', async () => {
     const ctx = new Context()
     const routes: WebRoute[] = []
     ctx.provide('webServer', fakeHttpServer(routes, []) as WebServer)
@@ -119,8 +127,8 @@ describe('connection node half', () => {
       imageLimits: { maxMessageImageBytes: 20 * 1024 * 1024 },
     } as AttachmentStore)
     ctx.provide('apiProxy', {} as ApiProxy)
-    expect(() => { apply(ctx, { maxRequestBodyBytes: 1024 }) })
-      .toThrow(/must be at least .* aggregate image limit/)
+    await expect(apply(ctx, { maxRequestBodyBytes: 1024 }))
+      .rejects.toThrow(/must be at least .* aggregate image limit/)
     expect(routes).toHaveLength(0)
   })
 
@@ -130,6 +138,7 @@ describe('connection node half', () => {
     const ctx = new Context()
     ctx.provide('webServer', fakeHttpServer(routes, upgrades) as WebServer)
     ctx.provide('apiProxy', {} as unknown as ApiProxy)
+    ctx.provide('credentials', fakeCredentials() as never)
     const fiber = ctx.plugin({ inject: [...inject], apply }, { trustedHosts: ['harness.internal/path'] })
     await expect(fiber).rejects.toThrow(/not a bare host\[:port\] authority/)
     expect(routes).toHaveLength(0)
@@ -183,7 +192,7 @@ describe('connection node half', () => {
   })
 
   it('pins privileged methods to a loopback peer even for a declared, authenticated remote authority', async () => {
-    const { routes, dispose } = await mounted({ trustedHosts: ['harness.example'], pairingToken: AUTH_TOKEN })
+    const { routes, dispose } = await mounted({ trustedHosts: ['harness.example'], pairingTokenEnv: TOKEN_REF })
     // The privileged set: native dialogs plus the whole settings/credential
     // configuration plane, reads included, plus the one method that makes the
     // host fetch a caller-chosen URL. This remote authority (LAN peer) presents
@@ -229,7 +238,8 @@ describe('connection node half', () => {
     const routes: WebRoute[] = []
     ctx.provide('webServer', fakeHttpServer(routes, []) as WebServer)
     ctx.provide('apiProxy', {} as unknown as ApiProxy)
-    const fiber = ctx.plugin({ inject: [...inject], apply }, { trustedHosts: ['harness.example'], pairingToken: AUTH_TOKEN })
+    ctx.provide('credentials', fakeCredentials() as never)
+    const fiber = ctx.plugin({ inject: [...inject], apply }, { trustedHosts: ['harness.example'], pairingTokenEnv: TOKEN_REF })
     await fiber.await()
     const connection = ctx.get('connection') as HostConnectionHandle
     const reached: string[] = []
@@ -278,7 +288,7 @@ describe('connection node half', () => {
   })
 
   it('passes loopback tokenless and admits declared authorities only with the pairing token', async () => {
-    const { routes, upgrades, dispose } = await mounted({ trustedHosts: ['harness.example:3080', '192.168.1.5'], pairingToken: AUTH_TOKEN })
+    const { routes, upgrades, dispose } = await mounted({ trustedHosts: ['harness.example:3080', '192.168.1.5'], pairingTokenEnv: TOKEN_REF })
     // Loopback, no browser markers and no token (curl shape): the fence
     // passes; the carrier answers 404 for a GET unary path — proof the bridge ran.
     const loopback = fakeResponse()
@@ -331,20 +341,19 @@ describe('connection node half', () => {
     await dispose()
   })
 
-  it('fails the load on a malformed pairing token or trusted authorities without one', async () => {
-    const invalid: [{ pairingToken?: string; trustedHosts?: string[] }, RegExp][] = [
-      [{ pairingToken: 'short' }, /pairingToken must be at least 16 characters/],
-      [{ trustedHosts: ['harness.example'] }, /trustedHosts requires pairingToken/],
-    ]
-    for (const [config, message] of invalid) {
-      const ctx = new Context()
-      const routes: WebRoute[] = []
-      ctx.provide('webServer', fakeHttpServer(routes, []) as WebServer)
-      ctx.provide('apiProxy', {} as unknown as ApiProxy)
-      const fiber = ctx.plugin({ inject: [...inject], apply }, config)
-      await expect(fiber).rejects.toThrow(message)
-      expect(routes).toHaveLength(0)
-    }
+  it.each([
+    ['a reference the credential store cannot resolve', { pairingTokenEnv: 'DSH_ABSENT' }, fakeCredentials(), /holds no value/],
+    ['a resolved token that is too weak to guard the network', { pairingTokenEnv: TOKEN_REF }, fakeCredentials('short'), /pairingToken must be at least 16 characters/],
+    ['trusted authorities named without any reference', { trustedHosts: ['harness.example'] }, fakeCredentials(), /trustedHosts requires pairingTokenEnv/],
+    ['a reference with no credentials service to resolve it', { pairingTokenEnv: TOKEN_REF }, undefined, /needs the credentials service/],
+  ])('fails the load on %s', async (_case, config, credentials, message) => {
+    const ctx = new Context()
+    const routes: WebRoute[] = []
+    ctx.provide('webServer', fakeHttpServer(routes, []) as WebServer)
+    ctx.provide('apiProxy', {} as unknown as ApiProxy)
+    if (credentials !== undefined) ctx.provide('credentials', credentials as never)
+    await expect(ctx.plugin({ inject: [...inject], apply }, config)).rejects.toThrow(message)
+    expect(routes).toHaveLength(0)
   })
 
   it('provides a disposable dedicated RPC channel without requiring apiProxy', async () => {
@@ -398,7 +407,8 @@ describe('connection node half', () => {
     const routes: WebRoute[] = []
     ctx.provide('webServer', fakeHttpServer(routes, []) as WebServer)
     ctx.provide('apiProxy', {} as unknown as ApiProxy)
-    const fiber = ctx.plugin({ inject: [...inject], apply }, { trustedHosts: ['harness.example'], pairingToken: AUTH_TOKEN })
+    ctx.provide('credentials', fakeCredentials() as never)
+    const fiber = ctx.plugin({ inject: [...inject], apply }, { trustedHosts: ['harness.example'], pairingTokenEnv: TOKEN_REF })
     await fiber.await()
     const connection = ctx.get('connection') as HostConnectionHandle
     const calls: unknown[] = []
@@ -477,7 +487,8 @@ describe('connection node half', () => {
     const ctx = new Context()
     const routes: WebRoute[] = []
     ctx.provide('webServer', fakeHttpServer(routes, []) as WebServer)
-    const fiber = ctx.plugin({ inject: [...inject], apply }, { trustedHosts: ['harness.example'], pairingToken: AUTH_TOKEN })
+    ctx.provide('credentials', fakeCredentials() as never)
+    const fiber = ctx.plugin({ inject: [...inject], apply }, { trustedHosts: ['harness.example'], pairingTokenEnv: TOKEN_REF })
     await fiber.await()
     const connection = ctx.get('connection') as HostConnectionHandle
     const remove = connection.rpc.handle('/rpc', async (endpoint) => {
@@ -600,7 +611,7 @@ describe('connection node half over a real HTTP server', () => {
     // loopback address, so this asserts the socket-derived loopback decision the
     // server actually performs — not a hand-set peer. A loopback peer owns the
     // machine, so it reaches everything tokenless, privileged plane included.
-    const { routes, dispose } = await mounted({ trustedHosts: ['harness.example'], pairingToken: AUTH_TOKEN })
+    const { routes, dispose } = await mounted({ trustedHosts: ['harness.example'], pairingTokenEnv: TOKEN_REF })
     const { port, close } = await serve(routes)
     const loopbackHost = `127.0.0.1:${String(port)}`
     try {

@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { addHarnessSourceSection } from '@deepseek-ai/dsh-app-boot'
+import { resolvePairingToken } from '@deepseek-ai/dsh-client-connection'
 import * as FrontendStatic from '@deepseek-ai/dsh-host-frontend-static'
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-host-webserver'
@@ -47,15 +48,15 @@ export interface Config {
   surfaceContext: boolean
   /** Explicit `--trusted-host` authorities from this invocation. */
   trustedHosts: string[]
-  /** Pairing token every non-loopback /api client must present; absent keeps the deployment loopback-only. */
-  pairingToken?: string
+  /** Credential reference holding the pairing token; absent keeps the deployment loopback-only. */
+  pairingTokenEnv?: string
 }
 
 export const Config: z<Config> = z.object({
   printUrl: z.boolean().default(true),
   surfaceContext: z.boolean().default(true),
   trustedHosts: z.array(String).default([]),
-  pairingToken: z.string(),
+  pairingTokenEnv: z.string(),
 })
 
 /** Bind-dependent Web values shared by the trust fence and URL display. */
@@ -64,8 +65,8 @@ export interface WebRuntimeValues {
   lanAddresses: string[]
   /** LAN literals followed by explicit invocation authorities. */
   trustedHosts: string[]
-  /** This invocation's pairing token, forwarded to the /api admission fence and the pairing URL. */
-  pairingToken?: string
+  /** Credential reference the /api admission fence resolves; the URL line resolves it too, for the pairing link. */
+  pairingTokenEnv?: string
 }
 
 /** Environment variable naming the canonical local URL of this Web GUI. */
@@ -134,11 +135,13 @@ export const internals: { resolveDistIndex: () => string } = { resolveDistIndex 
  * @param ctx - plugin context carrying the webServer service.
  * @param config - validated {@link Config}.
  */
-export function apply(ctx: Context, config: Config): void {
+export async function apply(ctx: Context, config: Config): Promise<void> {
   const runtime: WebRuntimeValues = {
     ...resolveLanTrust(ctx.webServer.host, config.trustedHosts),
-    ...config.pairingToken !== undefined && { pairingToken: config.pairingToken },
+    ...config.pairingTokenEnv !== undefined && { pairingTokenEnv: config.pairingTokenEnv },
   }
+  // The pairing URL needs the value; every config surface keeps the reference.
+  const pairingToken = await resolvePairingToken(ctx, config.pairingTokenEnv)
   // Release dependent rows only after bind-dependent trust has been sampled once.
   ctx.provide(WEB_RUNTIME_SERVICE, runtime)
   ctx.plugin(FrontendStatic, { distIndex: internals.resolveDistIndex() })
@@ -173,7 +176,7 @@ export function apply(ctx: Context, config: Config): void {
       // authority works.
       const lanCandidate = runtime.lanAddresses[0]
       const { port, scheme } = ctx.webServer
-      const pairing = runtime.pairingToken === undefined ? '' : `/#auth=${runtime.pairingToken}`
+      const pairing = pairingToken === undefined ? '' : `/#auth=${pairingToken}`
       const local = `${scheme}://${LOOPBACK_HOST}:${String(port)}`
       console.log(`dsh web: ${local}${lanCandidate === undefined ? '' : ` (LAN: ${scheme}://${lanCandidate}:${String(port)}${pairing})`}`)
     }

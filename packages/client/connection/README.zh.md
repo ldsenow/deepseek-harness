@@ -6,11 +6,13 @@
 
 ## /api 浏览器信任栅栏
 
-node 半侧在桥接或 upgrade 前守卫 `/api` 下的每个入口（`src/api-request-trust.ts`）。每个请求——无论是否带浏览器标记——`Host` 都必须是回环地址权威，或与某个 `trustedHosts` 条目匹配：带端口的 `host:port` 条目精确匹配，不带端口的条目匹配任意端口，两侧均经 WHATWG 归一化后比较（DNS rebinding 防御）。刻意不为无浏览器标记的 HTTP 请求开捷径：明文 HTTP 下浏览器的图片与导航读取既不带 `Origin` 也不带 Fetch-Metadata，因此无标记请求仍可能是被重绑页面发起的、响应可被读走的读取，而 Host 是重绑唯一伪造不了的请求头；WebSocket 浏览器握手会带 `Origin` 并通过同一道比较。非浏览器客户端经由回环地址、部署推导的 LAN IP 字面量或已声明的权威通过同一道栅栏。当标记存在时，如附带 `Origin`，则它必须与 Host 权威完全一致；显式的 `sec-fetch-site: cross-site` 标记一律拒绝。不是纯的、规范形 `host[:port]` 权威的 `trustedHosts` 条目——即 WHATWG 解析读回后与原文不完全一致的——会让插件加载明确报错：否则解析会悄悄授权 `harness.internal/path` 这类笔误里的 hostname，或把悬空冒号、补零端口放大成任意端口授权。HTTP 失败在任何 RPC 分发之前以纯 403 应答，upgrade 失败在启动任何事件流前拒绝握手。非回环组合必须显式信任其服务权威：Web 运行时从全接口服务器配置推导 LAN IP 字面量，cordis.yml 中的 `trustedHosts` 与 CLI（命令行界面）的 `--trusted-host` flag 则声明具名权威。这道栅栏是可达性策略，而不是认证——认证是下文的配对 token，且非空的 `trustedHosts` 不配 `pairingToken` 会让加载报错，因为那样的配置放行不了任何请求。决策记录：[api 浏览器信任边界 Agent Note](../../../.agents/notes/implemented/architecture/2026-07-28-api-browser-trust-boundary.md)。
+node 半侧在桥接或 upgrade 前守卫 `/api` 下的每个入口（`src/api-request-trust.ts`）。每个请求——无论是否带浏览器标记——`Host` 都必须是回环地址权威，或与某个 `trustedHosts` 条目匹配：带端口的 `host:port` 条目精确匹配，不带端口的条目匹配任意端口，两侧均经 WHATWG 归一化后比较（DNS rebinding 防御）。刻意不为无浏览器标记的 HTTP 请求开捷径：明文 HTTP 下浏览器的图片与导航读取既不带 `Origin` 也不带 Fetch-Metadata，因此无标记请求仍可能是被重绑页面发起的、响应可被读走的读取，而 Host 是重绑唯一伪造不了的请求头；WebSocket 浏览器握手会带 `Origin` 并通过同一道比较。非浏览器客户端经由回环地址、部署推导的 LAN IP 字面量或已声明的权威通过同一道栅栏。当标记存在时，如附带 `Origin`，则它必须与 Host 权威完全一致；显式的 `sec-fetch-site: cross-site` 标记一律拒绝。不是纯的、规范形 `host[:port]` 权威的 `trustedHosts` 条目——即 WHATWG 解析读回后与原文不完全一致的——会让插件加载明确报错：否则解析会悄悄授权 `harness.internal/path` 这类笔误里的 hostname，或把悬空冒号、补零端口放大成任意端口授权。HTTP 失败在任何 RPC 分发之前以纯 403 应答，upgrade 失败在启动任何事件流前拒绝握手。非回环组合必须显式信任其服务权威：Web 运行时从全接口服务器配置推导 LAN IP 字面量，cordis.yml 中的 `trustedHosts` 与 CLI（命令行界面）的 `--trusted-host` flag 则声明具名权威。这道栅栏是可达性策略，而不是认证——认证是下文的配对 token，且非空的 `trustedHosts` 不配 `pairingTokenEnv` 会让加载报错，因为那样的配置放行不了任何请求。决策记录：[api 浏览器信任边界 Agent Note](../../../.agents/notes/implemented/architecture/2026-07-28-api-browser-trust-boundary.md)。
 
 ## 配对 token 认证
 
-来自非回环 peer 的请求只有在部署配置了 `pairingToken` 且请求以 `dsh_auth` cookie 或 `Authorization: Bearer` 请求头出示它时才被放行（`src/api-auth.ts`）；比较在 sha256 摘要上恒定时间进行。token 至少 16 个 `A-Za-z0-9_-` 字符，否则加载报错。
+来自非回环 peer 的请求只有在部署配置了 `pairingTokenEnv` 且请求以 `dsh_auth` cookie 或 `Authorization: Bearer` 请求头出示它所指向的 token 时才被放行（`src/api-auth.ts`）；比较在 sha256 摘要上恒定时间进行。
+
+配置携带引用，而不是机密本身。`pairingTokenEnv` 是一个凭据引用，在加载时经 [`ctx.credentials`](../../credentials/credentials/README.md) 解析一次，因此 token 可以存放在环境变量、受管凭据存储或 `.env` 层中，任何回显配置的表面都无法泄漏它。引用解析不到取值、解析出的 token 不足 16 个 `A-Za-z0-9_-` 字符，以及在没有组合 credentials 服务时指定引用，都会让加载报错。由于解析每次加载只做一次，轮换后的 token 在下次启动生效——放行本身是同步的。
 
 回环判定读取 socket peer 地址（`req.socket.remoteAddress`），绝不读客户端可控的 `Host` 头：在全接口绑定上，任何能到达 socket 的客户端都可以声称 `Host: localhost`，因此基于头的豁免会绕过 token。上文的 Host 栅栏对每个请求仍然运行，但它本身不承担任何认证。
 

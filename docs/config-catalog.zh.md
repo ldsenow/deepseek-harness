@@ -408,21 +408,26 @@ export interface ConnectionConfig {
    */
   trustedHosts?: string[]
   /**
-   * Pairing token every /api request from a non-loopback socket peer must
-   * present — as the `dsh_auth` cookie the browser client sets after opening
-   * a `#auth=<token>` pairing link, or an `Authorization: Bearer` header. At
-   * least 16 characters of `A-Za-z0-9_-`; anything else fails the load.
-   * Required together with a non-empty `trustedHosts`: a declared authority
-   * without a token could admit no request, so that combination also fails
-   * the load. A loopback peer never needs it.
+   * Credential reference — an environment-variable-shaped name — holding the
+   * pairing token every /api request from a non-loopback socket peer must
+   * present, as the `dsh_auth` cookie the browser client sets after opening a
+   * `#auth=<token>` pairing link or an `Authorization: Bearer` header. The
+   * reference resolves through `ctx.credentials`, so the value may come from
+   * the environment, the managed credential store, or a `.env` layer;
+   * configuration never carries the token itself. A reference that resolves to
+   * nothing, or to a token that is not at least 16 characters of
+   * `A-Za-z0-9_-`, fails the load, as does naming one without a composed
+   * credentials service. Required together with a non-empty `trustedHosts`: a
+   * declared authority without a token could admit no request. A loopback peer
+   * never needs it.
    */
-  pairingToken?: string
+  pairingTokenEnv?: string
   /** Maximum buffered JSON body for every `/api` request. */
   maxRequestBodyBytes?: number
 }
 ```
 
-来源：[`packages/client/connection/src/index.ts:53`](../packages/client/connection/src/index.ts)
+来源：[`packages/client/connection/src/index.ts:55`](../packages/client/connection/src/index.ts)
 
 <a id="deepseek-aidsh-client-hmr"></a>
 
@@ -2900,12 +2905,12 @@ export interface Config {
   surfaceContext: boolean
   /** Explicit `--trusted-host` authorities from this invocation. */
   trustedHosts: string[]
-  /** Pairing token every non-loopback /api client must present; absent keeps the deployment loopback-only. */
-  pairingToken?: string
+  /** Credential reference holding the pairing token; absent keeps the deployment loopback-only. */
+  pairingTokenEnv?: string
 }
 ```
 
-来源：[`packages/bundle/web-app/src/index.ts:38`](../packages/bundle/web-app/src/index.ts)
+来源：[`packages/bundle/web-app/src/index.ts:39`](../packages/bundle/web-app/src/index.ts)
 
 <a id="deepseek-aidsh-web-fetch-http"></a>
 

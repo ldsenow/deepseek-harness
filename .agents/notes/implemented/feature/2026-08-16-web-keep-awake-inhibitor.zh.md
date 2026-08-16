@@ -10,12 +10,13 @@ Status: implemented
 
 ## 决定
 
-`dsh --profile web --keep-awake` 挂载 `web-keep-awake` 插件（`@deepseek-ai/dsh-web-app/keep-awake`，配置为 `{enabled}`），在插件生命周期内持有一个平台自有的抑制器子进程：macOS 上是 `caffeinate -i`，Linux 上是 `systemd-inhibit --what=sleep:idle --mode=block sleep infinity`，Windows 上是持有 `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` 的 PowerShell 子进程。委托给 OS 让锁不落在 dsh 自身的状态里：由子进程持有，子进程退出时 OS 释放它。dispose（资源释放）向子进程发信号并等待其退出（按[防御模式](../../../../docs/defensive-patterns.md)达到完全停稳）；在 POSIX 上子进程自成进程组，信号发往整个组，因为 `systemd-inhibit` 把 `sleep` 作为自己的子进程运行且不转发任何信号，只对直接子进程发信号会留下那个孙进程存活。被强行结束的 dsh 进程（`SIGKILL`、断电）不会执行 dispose，因此子进程成为孤儿并继续持有抑制器，直到它被杀死或机器重启。激活会等待子进程的 `spawn` 并在失败时报错，因此要求保持唤醒的调用不会在没有抑制器的情况下继续服务；子进程之后退出则记录警告，服务继续。子进程在 `scrubbedParentEnv()` 下运行。
+`dsh --profile web --keep-awake` 挂载 `web-keep-awake` 插件（`@deepseek-ai/dsh-web-app/keep-awake`，配置为 `{enabled}`），在插件生命周期内持有一个平台自有的抑制器子进程：macOS 上是 `caffeinate -i`，Linux 上是 `systemd-inhibit --what=sleep:idle --mode=block sleep infinity`，Windows 上是持有 `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` 的 PowerShell 子进程。委托给 OS 让锁不落在 dsh 自身的状态里：由子进程持有，子进程退出时 OS 释放它。子进程走 [subprocess 能力缝](../../../../packages/subprocess/subprocess/README.md)，它本就持有剔除凭据的环境、进程树，以及 SIGTERM 转 SIGKILL 的升级；dispose（资源释放）调用 `terminate()` 并等待整棵树（按[防御模式](../../../../docs/defensive-patterns.md)达到完全停稳）。在本地自行持有这套终止逻辑，代价是两个该缝并不存在的缺陷：只对直接子进程发信号会留下 `systemd-inhibit` 自己的 `sleep` 存活，而在抑制器忽略信号后等待退出会让拆卸永远挂住。被强行结束的 dsh 进程（`SIGKILL`、断电）不会执行 dispose，因此子进程成为孤儿并继续持有抑制器，直到它被杀死或机器重启。没有产生 pid 的 spawn 会让激活报错，因此要求保持唤醒的调用不会在没有抑制器的情况下继续服务；子进程之后退出则记录警告，服务继续。
 
 ## 考虑过的替代方案
 
 - **直接调用电源 API 的原生插件。** 否决：三个平台绑定的构建与发布（仓库仅有的一个原生插件已经是维护成本）对比三个内置可执行文件；而且进程内的锁只能和我们自己的拆卸一样可靠，子进程持有的锁则由内核在任何死亡时释放。
 - **npm keep-awake 依赖。** 否决：候选者都是包着同样三条命令的薄且无人维护的包装层；依赖必须能删除自有代码，而这里它只会替换一个 `switch`。
+- **在本插件内自持 spawn 与进程组终止。** 试过并已回退：它复制了 subprocess 能力缝，并在该缝本已做对的两处（树终止与信号升级）与之漂移，因此本插件如今只提供 argv 与宽限窗口。
 - **只在会话活跃时抑制。** 暂缓：把持有与 agent 活动绑定需要一个空闲定义（排队的 follow-up、后台任务、已配对但空闲的设备，对手机前的人来说都算「在用」）。进程生命周期的持有可预测，且与显式 flag 匹配。
 - **`--host 0.0.0.0` 时始终开启。** 否决：让机器无限期保持唤醒是所有者做出的电源决定，不是 LAN 服务的副作用。
 

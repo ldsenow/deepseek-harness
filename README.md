@@ -43,6 +43,8 @@ export DSH_PAIRING_TOKEN="$(node -e "console.log(require('crypto').randomBytes(2
 npx @deepseek-ai/dsh web --host 0.0.0.0 --pairing-token-env DSH_PAIRING_TOKEN
 ```
 
+`--pairing-token-env` names where the token lives, never the token itself: dsh reads it through the same credential store as your API keys, so the environment, `$DSH_HOME/.credentials.yaml`, and a project `.env` all work.
+
 The command prints a pairing URL like `https://<lan-ip>:3080/#auth=<token>` and serves over an auto-generated self-signed certificate. Open that link once on the other device — it accepts the certificate and stores the token — after which you reconnect by typing the bare `https://<lan-ip>:3080`. Add `--keep-awake` to stop the host machine from sleeping while it serves.
 
 The `/api` surface runs commands as the `dsh` process, so a pairing token is required for every non-loopback client; local (loopback) use and tunnels such as `adb reverse` or SSH stay tokenless. See the [Web UI guide](docs/user/guide/index.md#remote-access-lan).

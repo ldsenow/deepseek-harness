@@ -115,7 +115,7 @@
     # paired LAN devices.
     - id: web-keep-awake
       name: '@deepseek-ai/dsh-web-app/keep-awake'
-      inject: [webStartup]
+      inject: [webStartup, subprocess]
       config:
         enabled: !!js ctx.webStartup.keepAwake === true
 
@@ -152,12 +152,12 @@
     # agent while retaining the host-owned shell variable.
     - id: web-runtime
       name: '@deepseek-ai/dsh-web-app'
-      inject: [webStartup]
+      inject: [webStartup, credentials]
       config:
         printUrl: true
         surfaceContext: true
         trustedHosts: !!js ctx.webStartup.trustedHosts
-        pairingToken: !!js ctx.webStartup.pairingToken
+        pairingTokenEnv: !!js ctx.webStartup.pairingTokenEnv
 
     # The client-plugin reload chain, always mounted: it is idle until a
     # rebuild watcher (pnpm run dev:web) actually rewrites client bundles. It
@@ -179,14 +179,14 @@
     # webserver under /api; browser half is the fetch/SSE client.
     - id: connection
       name: '@deepseek-ai/dsh-client-connection'
-      inject: [webRuntime]
+      inject: [webRuntime, credentials]
       config:
         # LAN literals derived from the active bind plus --trusted-host extras.
         # A deployment adding authorities keeps this expression and concatenates
         # its literals, for example: ['app.internal', ...ctx.webRuntime.trustedHosts].
         # Non-loopback admission additionally requires the pairing token.
         trustedHosts: !!js ctx.webRuntime.trustedHosts
-        pairingToken: !!js ctx.webRuntime.pairingToken
+        pairingTokenEnv: !!js ctx.webRuntime.pairingTokenEnv
 
     - id: api-remotes
       name: '@deepseek-ai/dsh-api-remotes'

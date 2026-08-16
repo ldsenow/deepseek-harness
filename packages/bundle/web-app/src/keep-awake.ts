@@ -1,28 +1,25 @@
 /**
  * The web app's host sleep inhibitor: while enabled, holds a platform
- * keep-awake child process for the dsh process lifetime so idle sleep cannot
- * cut off running sessions or paired LAN devices. The inhibitor is the
- * platform's own facility — `caffeinate -i` on macOS, `systemd-inhibit` on
- * Linux, a PowerShell `SetThreadExecutionState` holder on Windows — so
- * disposal or process death always releases the lock with the child. An
- * inhibitor that cannot start rejects activation: a deployment that asked to
- * stay awake must never silently serve without it. An inhibitor that dies
- * later logs a warning and serving continues.
+ * keep-awake child for the dsh process lifetime so idle sleep cannot cut off
+ * running sessions or paired LAN devices. The inhibitor is the platform's own
+ * facility — `caffeinate -i` on macOS, `systemd-inhibit` on Linux, a PowerShell
+ * `SetThreadExecutionState` holder on Windows — so disposal or process death
+ * always releases the lock with the child. An inhibitor that cannot start
+ * rejects activation: a deployment that asked to stay awake must never silently
+ * serve without it. An inhibitor that dies later logs a warning and serving
+ * continues.
  * @module @deepseek-ai/dsh-web-app/keep-awake
  */
 
-import { spawn } from 'node:child_process'
-import { once } from 'node:events'
-import type { ChildProcess } from 'node:child_process'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { scrubbedParentEnv } from '@deepseek-ai/dsh-subprocess'
+import type {} from '@deepseek-ai/dsh-subprocess'
 
 /** Stable Cordis plugin name. */
 export const name = 'web-keep-awake'
 
-/** Required services (none — the inhibitor rides the plugin lifetime alone). */
-export const inject: string[] = []
+/** The process seam owning spawn, tree termination, and exit observation. */
+export const inject = ['subprocess']
 
 /** Plugin config: whether this invocation holds the host awake. */
 export interface Config {
@@ -53,6 +50,16 @@ const WINDOWS_HOLD = [
   'while ($true) { Start-Sleep -Seconds 3600 }',
 ].join(' ')
 
+/** SIGTERM-to-SIGKILL window at teardown: long enough for a signal-handling inhibitor to release its lock. */
+const TERMINATE_GRACE_MS = 5_000
+
+/**
+ * The inhibitors print nothing in normal operation. Collecting a small bound
+ * keeps whatever a broken one does say off the URL readiness line, without
+ * leaving an unread pipe the child could block on.
+ */
+const DISCARD_OUTPUT = { maxBytes: 4096 } as const
+
 /**
  * Resolve the platform's sleep-inhibitor invocation.
  * @param platform - `process.platform` of the host.
@@ -74,74 +81,33 @@ export function resolveInhibitor(platform: NodeJS.Platform): InhibitorCommand {
 }
 
 /**
- * Test hooks: substitute spawn and termination; production always uses the
- * platform command and a group signal. `terminateInhibitor` returns the signal
- * failure when the child may still be holding the inhibitor, and `undefined`
- * once the group is gone or on its way out.
- */
-export const internals: {
-  spawnInhibitor: (inhibitor: InhibitorCommand) => ChildProcess
-  terminateInhibitor: (child: ChildProcess) => NodeJS.ErrnoException | undefined
-} = {
-  spawnInhibitor: inhibitor => spawn(inhibitor.command, inhibitor.args, {
-    env: scrubbedParentEnv(),
-    // Detached from stdout, which carries the URL readiness line.
-    stdio: 'ignore',
-    // POSIX group leader: `systemd-inhibit` forwards no signal to its own
-    // `sleep` child, so signalling only the direct child orphans that one.
-    detached: process.platform !== 'win32',
-  }),
-  terminateInhibitor: (child) => {
-    const pid = child.pid
-    if (pid === undefined) return
-    try {
-      if (process.platform === 'win32') child.kill()
-      else process.kill(-pid, 'SIGTERM')
-    } catch (error) {
-      const failure = error as NodeJS.ErrnoException
-      // ESRCH is the wanted end state. Anything else (EPERM from a recycled
-      // pid's group) leaves a child that may still hold the inhibitor.
-      return failure.code === 'ESRCH' ? undefined : failure
-    }
-    return undefined
-  },
-}
-
-/**
- * Hold the sleep inhibitor while this plugin lives. Activation resolves only
- * after the child has spawned; a spawn failure (missing platform binary)
- * rejects the load. Disposal signals the child and awaits its exit, or warns
- * and returns when the signal itself failed.
- * @param ctx - plugin context.
+ * Hold the sleep inhibitor while this plugin lives.
+ * @param ctx - plugin context carrying the subprocess seam.
  * @param config - validated {@link Config}.
  */
 export async function apply(ctx: Context, config: Config): Promise<void> {
   if (!config.enabled) return
-  const child = internals.spawnInhibitor(resolveInhibitor(process.platform))
-  // 'error' before 'spawn' (ENOENT and friends) rejects activation loudly.
-  await once(child, 'spawn')
+  const { command, args } = resolveInhibitor(process.platform)
+  const held = ctx.subprocess.spawn({
+    argv: [command, ...args],
+    cwd: process.cwd(),
+    stdio: { stdin: 'ignore', stdout: DISCARD_OUTPUT, stderr: DISCARD_OUTPUT },
+    graceMs: TERMINATE_GRACE_MS,
+  })
+  // A missing platform binary leaves no pid; `done` carries the spawn error, so
+  // awaiting it rejects this load rather than serving without the inhibitor.
+  if (held.pid <= 0) await held.done
   let disposed = false
-  // `events.once` dropped its temporary 'error' handler on resolve, and a
-  // ChildProcess with none throws on the next one, killing the dsh process.
-  child.on('error', (error) => {
-    if (disposed) return
-    ctx.logger.warn(`web-keep-awake: sleep inhibitor failed (${error.message}); the host may sleep again`)
-  })
-  child.once('exit', (code, signal) => {
-    if (disposed) return
-    ctx.logger.warn(`web-keep-awake: sleep inhibitor exited (code ${String(code)}, signal ${String(signal)}); the host may sleep again`)
-  })
+  const report = (what: string): void => {
+    if (!disposed) ctx.logger.warn(`web-keep-awake: sleep inhibitor ${what}; the host may sleep again`)
+  }
+  void held.done.then(
+    (outcome) => { report(`exited (code ${String(outcome.exitCode)}, signal ${String(outcome.signal)})`) },
+    (error: unknown) => { report(`failed (${String(error)})`) },
+  )
   ctx.effect(() => async () => {
     disposed = true
-    if (child.exitCode !== null || child.signalCode !== null) return
-    // 'exit' alone: an 'error' here must not reject teardown.
-    const exited = new Promise<void>((resolve) => { child.once('exit', () => { resolve() }) })
-    const failure = internals.terminateInhibitor(child)
-    if (failure !== undefined) {
-      // No 'exit' is coming, so awaiting one would hang teardown.
-      ctx.logger.warn(`web-keep-awake: could not release the sleep inhibitor (${failure.message}); process ${String(child.pid)} may keep the host awake until it is killed`)
-      return
-    }
-    await exited
+    held.terminate()
+    await held.waitForExit()
   }, 'web-keep-awake: sleep inhibitor')
 }

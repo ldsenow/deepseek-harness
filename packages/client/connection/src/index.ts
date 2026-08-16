@@ -8,7 +8,7 @@ import { toFetchHandler } from '@deepseek-ai/dsh-host-apiproxy'
 import { API_PATH, HOST_EVENTS_PATH, MUX_EVENTS_PATH } from './api-path.ts'
 import { bridge, DEFAULT_MAX_REQUEST_BODY_BYTES } from './http-bridge.ts'
 import { assertTrustedAuthority } from './api-request-trust.ts'
-import { admitApiRequest, assertPairingToken } from './api-auth.ts'
+import { admitApiRequest, resolvePairingToken } from './api-auth.ts'
 import { isLoopbackAddress } from '@deepseek-ai/dsh-loopback'
 import { HostConnectionService } from './rpc-host.ts'
 import { rejectWebSocketUpgrade, WebSocketDownlinks } from './websocket-downlink.ts'
@@ -26,6 +26,7 @@ export { HostConnectionService } from './rpc-host.ts'
 export { API_PATH, HOST_EVENTS_PATH, MUX_EVENTS_PATH } from './api-path.ts'
 
 export { PAIRING_TOKEN_PATTERN, PAIRING_TOKEN_REQUIREMENT } from './auth-wire.ts'
+export { resolvePairingToken } from './api-auth.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'client-connection'
@@ -62,22 +63,27 @@ export interface ConnectionConfig {
    */
   trustedHosts?: string[]
   /**
-   * Pairing token every /api request from a non-loopback socket peer must
-   * present — as the `dsh_auth` cookie the browser client sets after opening
-   * a `#auth=<token>` pairing link, or an `Authorization: Bearer` header. At
-   * least 16 characters of `A-Za-z0-9_-`; anything else fails the load.
-   * Required together with a non-empty `trustedHosts`: a declared authority
-   * without a token could admit no request, so that combination also fails
-   * the load. A loopback peer never needs it.
+   * Credential reference — an environment-variable-shaped name — holding the
+   * pairing token every /api request from a non-loopback socket peer must
+   * present, as the `dsh_auth` cookie the browser client sets after opening a
+   * `#auth=<token>` pairing link or an `Authorization: Bearer` header. The
+   * reference resolves through `ctx.credentials`, so the value may come from
+   * the environment, the managed credential store, or a `.env` layer;
+   * configuration never carries the token itself. A reference that resolves to
+   * nothing, or to a token that is not at least 16 characters of
+   * `A-Za-z0-9_-`, fails the load, as does naming one without a composed
+   * credentials service. Required together with a non-empty `trustedHosts`: a
+   * declared authority without a token could admit no request. A loopback peer
+   * never needs it.
    */
-  pairingToken?: string
+  pairingTokenEnv?: string
   /** Maximum buffered JSON body for every `/api` request. */
   maxRequestBodyBytes?: number
 }
 
 export const Config: z<ConnectionConfig> = z.object({
   trustedHosts: z.array(String).default([]),
-  pairingToken: z.string(),
+  pairingTokenEnv: z.string(),
   maxRequestBodyBytes: z.natural().min(1).default(DEFAULT_MAX_REQUEST_BODY_BYTES),
 })
 
@@ -151,18 +157,17 @@ const PRIVILEGED_METHODS = new Set([
  * @param ctx - Host plugin context.
  * @param config - resolved plugin config (schema defaults applied).
  */
-export function apply(ctx: Context, config?: ConnectionConfig): void {
+export async function apply(ctx: Context, config?: ConnectionConfig): Promise<void> {
   // The Loader resolves schema defaults; hand-built test contexts may pass none.
   const trustedHosts = config?.trustedHosts ?? []
-  const pairingToken = config?.pairingToken
   const maxRequestBodyBytes = config?.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES
   // Config boundary: a malformed entry fails the load loudly here rather than
   // silently authorizing its hostname prefix at request time.
   for (const entry of trustedHosts) assertTrustedAuthority(entry)
-  if (pairingToken !== undefined) assertPairingToken(pairingToken)
-  if (trustedHosts.length > 0 && pairingToken === undefined) {
-    throw new Error('client-connection: trustedHosts requires pairingToken — without a pairing token no non-loopback request is admitted')
+  if (trustedHosts.length > 0 && config?.pairingTokenEnv === undefined) {
+    throw new Error('client-connection: trustedHosts requires pairingTokenEnv — without a pairing token no non-loopback request is admitted')
   }
+  const pairingToken = await resolvePairingToken(ctx, config?.pairingTokenEnv)
   if (ctx.get('apiProxy') !== undefined) assertImageBodyCapacity(ctx, maxRequestBodyBytes)
   const connection = new HostConnectionService(ctx, trustedHosts, pairingToken)
   const fetchHandler = connection.createSharedFetchHandler(API_PATH, endpoint => PRIVILEGED_METHODS.has(endpoint), {

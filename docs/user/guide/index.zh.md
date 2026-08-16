@@ -31,7 +31,7 @@ export DSH_PAIRING_TOKEN="$(node -e "console.log(require('crypto').randomBytes(2
 dsh web --host 0.0.0.0 --pairing-token-env DSH_PAIRING_TOKEN
 ```
 
-`/api` 表面以 `dsh` 进程身份执行命令，因此 `--host 0.0.0.0` 需要一个至少 16 个 `A-Za-z0-9_-` 字符的配对 token；不带它启动会报错。`--pairing-token-env` 指定保存该 token 的环境变量名。另有一个直接接受取值的 `--pairing-token <token>` 形式，但机器上的每个用户都能读到进程的参数，因此优先用环境变量。在全接口绑定上，服务器还会用一份一次性生成、重启后复用的自签名证书提供 HTTPS。
+`/api` 表面以 `dsh` 进程身份执行命令，因此 `--host 0.0.0.0` 需要一个至少 16 个 `A-Za-z0-9_-` 字符的配对 token；不带它启动会报错。`--pairing-token-env` 指明 token *存在何处*，而不是把它传进来：dsh 通过与 API key 相同的凭据存储解析这个名字，因此取值可以放在环境变量、`$DSH_HOME/.credentials.yaml` 或项目 `.env` 里。token 本身绝不会出现在命令行或配置文件中。在全接口绑定上，服务器还会用一份一次性生成、重启后复用的自签名证书提供 HTTPS。
 
 启动行会打印配对 URL：
 

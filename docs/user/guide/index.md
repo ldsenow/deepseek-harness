@@ -31,7 +31,7 @@ export DSH_PAIRING_TOKEN="$(node -e "console.log(require('crypto').randomBytes(2
 dsh web --host 0.0.0.0 --pairing-token-env DSH_PAIRING_TOKEN
 ```
 
-The `/api` surface executes commands as the `dsh` process, so `--host 0.0.0.0` requires a pairing token of at least 16 characters of `A-Za-z0-9_-`; starting without one is an error. `--pairing-token-env` names the environment variable holding it. There is also a `--pairing-token <token>` form that takes the value directly, but every user on the machine can read a process's arguments, so prefer the variable. On an all-interfaces bind the server also serves HTTPS with a self-signed certificate generated once and reused across restarts.
+The `/api` surface executes commands as the `dsh` process, so `--host 0.0.0.0` requires a pairing token of at least 16 characters of `A-Za-z0-9_-`; starting without one is an error. `--pairing-token-env` names *where* the token lives rather than passing it: dsh resolves that name through the same credential store as your API keys, so the value can sit in the environment, in `$DSH_HOME/.credentials.yaml`, or in a project `.env`. The token itself never reaches a command line or a configuration file. On an all-interfaces bind the server also serves HTTPS with a self-signed certificate generated once and reused across restarts.
 
 The startup line prints a pairing URL:
 

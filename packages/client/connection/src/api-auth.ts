@@ -7,6 +7,8 @@
  */
 
 import { createHash, timingSafeEqual } from 'node:crypto'
+import type { Context } from '@deepseek-ai/cordis'
+import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { AUTH_COOKIE_NAME, PAIRING_TOKEN_PATTERN, PAIRING_TOKEN_REQUIREMENT } from './auth-wire.ts'
 import { isTrustedApiRequest, header, type ApiTrustRequest } from './api-request-trust.ts'
 
@@ -20,6 +22,31 @@ import { isTrustedApiRequest, header, type ApiTrustRequest } from './api-request
 export function assertPairingToken(token: string): void {
   if (PAIRING_TOKEN_PATTERN.test(token)) return
   throw new Error(`client-connection: pairingToken must be ${PAIRING_TOKEN_REQUIREMENT}`)
+}
+
+/**
+ * Resolve the deployment's pairing token from the credential reference its
+ * configuration names. Configuration carries the reference, never the secret,
+ * so config-echoing surfaces cannot leak it and the value can live in the
+ * environment, the managed credential store, or a `.env` layer. Resolution is
+ * once per load: admission is synchronous, and a rotated token takes effect on
+ * the next boot.
+ * @param ctx - plugin context; the credentials seam must be composed.
+ * @param ref - environment-variable-shaped reference, or undefined for a loopback-only deployment.
+ * @returns the token, or undefined when no reference was configured.
+ */
+export async function resolvePairingToken(ctx: Context, ref: string | undefined): Promise<string | undefined> {
+  if (ref === undefined) return undefined
+  const credentials = ctx.get('credentials')
+  if (credentials === undefined) {
+    throw new Error(`client-connection: pairingTokenEnv ${JSON.stringify(ref)} needs the credentials service, which this composition does not provide`)
+  }
+  const hit = await credentials.resolve(credentialRef(ref))
+  if (hit === undefined) {
+    throw new Error(`client-connection: pairingTokenEnv names ${JSON.stringify(ref)}, which holds no value in the environment, the credential store, or a .env layer`)
+  }
+  assertPairingToken(hit.value)
+  return hit.value
 }
 
 /** Every token the request presents: the Bearer authorization plus each `dsh_auth` cookie value. */

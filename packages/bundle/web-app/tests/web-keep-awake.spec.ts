@@ -1,58 +1,33 @@
 /** Sleep-inhibitor plugin: platform command resolution, hold lifecycle, and fail-loud spawn. */
-import { EventEmitter } from 'node:events'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { ChildProcess } from 'node:child_process'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apply, Config, inject, internals, resolveInhibitor, type InhibitorCommand } from '../src/keep-awake.ts'
+import SubprocessLocal from '@deepseek-ai/dsh-subprocess-local'
+import type { SubprocessHandle, SubprocessOutcome, SubprocessRuntime, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
+import { describe, expect, it, vi } from 'vitest'
+import { apply, Config, inject, resolveInhibitor } from '../src/keep-awake.ts'
 
-const originalSpawn = internals.spawnInhibitor
-const originalTerminate = internals.terminateInhibitor
-/** Restored after a test forces `process.platform` to exercise the Windows path. */
-const PLATFORM = process.platform
-
-/** Fakes carry no real pid, so termination routes to the fake's own kill, which always lands. */
-function terminateFake(child: ChildProcess): undefined {
-  child.kill()
-  return undefined
+/** Scriptable subprocess seam: records the spec and drives the handle's outcome by hand. */
+function fakeSubprocess(handle: Partial<SubprocessHandle>, spawned: SubprocessSpawnSpec[] = []): SubprocessRuntime {
+  return {
+    spawn(spec: SubprocessSpawnSpec) {
+      spawned.push(spec)
+      return { pid: 4242, terminate: () => {}, waitForExit: async () => true, ...handle } as SubprocessHandle
+    },
+  } as SubprocessRuntime
 }
 
-afterEach(() => {
-  internals.spawnInhibitor = originalSpawn
-  internals.terminateInhibitor = originalTerminate
-  vi.restoreAllMocks()
-})
-
-/** Structural inhibitor child: spawn/exit are test-driven; kill records and reports exit. */
-class FakeInhibitor extends EventEmitter {
-  exitCode: number | null = null
-  signalCode: NodeJS.Signals | null = null
-  killed = false
-  pid: number | undefined = undefined
-
-  kill(): boolean {
-    this.killed = true
-    queueMicrotask(() => {
-      this.signalCode = 'SIGTERM'
-      this.emit('exit', null, 'SIGTERM')
-    })
-    return true
-  }
-
-  /** Complete the spawn handshake on the next microtask (the real child emits 'spawn' asynchronously). */
-  spawnOk(): this {
-    queueMicrotask(() => { this.emit('spawn') })
-    return this
-  }
-}
-
-function asChild(fake: FakeInhibitor): ChildProcess {
-  return fake as unknown as ChildProcess
+/** Mount the plugin over a substituted seam and hand back the warning sink. */
+async function mount(runtime: SubprocessRuntime, enabled = true) {
+  const warn = vi.fn()
+  const ctx = new Context()
+  ctx.provide('subprocess', runtime)
+  Object.defineProperty(ctx, 'logger', { value: { warn, error: vi.fn() }, configurable: true })
+  return { warn, ctx, fiber: ctx.plugin({ inject: [...inject], apply }, new Config({ enabled })) }
 }
 
 describe('web-keep-awake module', () => {
@@ -63,7 +38,7 @@ describe('web-keep-awake module', () => {
     const module = await import('../src/keep-awake.ts')
     expect('default' in module).toBe(false)
     expect(module.name).toBe('web-keep-awake')
-    expect(module.inject).toEqual([])
+    expect(module.inject).toEqual(['subprocess'])
   })
 })
 
@@ -78,222 +53,138 @@ describe('resolveInhibitor', () => {
   })
 })
 
-describe('terminateInhibitor', () => {
-  it('does nothing for a child that never got a pid', () => {
-    // A failed spawn leaves `pid` undefined; signalling group 0 from here would
-    // hit this process's own group, so termination must be a no-op instead.
-    const fake = new FakeInhibitor()
-    const groupSignals = vi.spyOn(process, 'kill').mockImplementation(() => true)
-    expect(originalTerminate(asChild(fake))).toBeUndefined()
-    expect(fake.killed).toBe(false)
-    expect(groupSignals).not.toHaveBeenCalled()
-  })
-
-  it('kills the process directly on Windows, where the holder leads no group', () => {
-    const fake = new FakeInhibitor()
-    fake.pid = 4242
-    const groupSignals = vi.spyOn(process, 'kill').mockImplementation(() => true)
-    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
-    try {
-      originalTerminate(asChild(fake))
-    } finally {
-      Object.defineProperty(process, 'platform', { value: PLATFORM, configurable: true })
-    }
-    expect(fake.killed).toBe(true)
-    expect(groupSignals).not.toHaveBeenCalled()
-  })
-
-  it.each([
-    ['ESRCH', undefined],
-    ['EPERM', 'EPERM'],
-  ])('reports a %s signal failure as %s', (code, reported) => {
-    const fake = new FakeInhibitor()
-    fake.pid = 4242
-    const failure = Object.assign(new Error(`kill ${code}`), { code })
-    // Both call sites throw, so the assertion holds on POSIX and Windows alike.
-    fake.kill = () => { throw failure }
-    vi.spyOn(process, 'kill').mockImplementation(() => { throw failure })
-    expect(originalTerminate(asChild(fake))?.code).toBe(reported)
-  })
-})
-
 describe('web-keep-awake plugin', () => {
   it('spawns nothing when disabled', async () => {
-    const spawned: InhibitorCommand[] = []
-    internals.spawnInhibitor = (command) => { spawned.push(command); throw new Error('unreachable') }
-    const ctx = new Context()
-    await ctx.plugin({ inject: [...inject], apply }, new Config({ enabled: false }))
+    const spawned: SubprocessSpawnSpec[] = []
+    const { fiber, ctx } = await mount(fakeSubprocess({ done: new Promise(() => {}) }, spawned), false)
+    await fiber
     expect(spawned).toEqual([])
     await ctx.fiber.dispose()
   })
 
-  it('holds the inhibitor for the plugin lifetime and awaits its exit on dispose', async () => {
-    const fake = new FakeInhibitor()
-    const spawned: InhibitorCommand[] = []
-    internals.spawnInhibitor = (command) => { spawned.push(command); return asChild(fake.spawnOk()) }
-    internals.terminateInhibitor = terminateFake
-    const warn = vi.fn()
-    const ctx = new Context()
-    Object.defineProperty(ctx, 'logger', { value: { warn }, configurable: true })
-    const fiber = ctx.plugin({ inject: [...inject], apply }, new Config({ enabled: true }))
+  it('holds the platform inhibitor for the plugin lifetime and awaits the tree on dispose', async () => {
+    const spawned: SubprocessSpawnSpec[] = []
+    let terminated = 0
+    let awaited = 0
+    const { warn, fiber } = await mount(fakeSubprocess({
+      done: new Promise(() => {}),
+      terminate: () => { terminated += 1 },
+      waitForExit: async () => { awaited += 1; return true },
+    }, spawned))
     await fiber.await()
-    expect(spawned).toEqual([resolveInhibitor(process.platform)])
-    expect(fake.killed).toBe(false)
+    const { command, args } = resolveInhibitor(process.platform)
+    expect(spawned[0]?.argv).toEqual([command, ...args])
+    // Both streams off the URL readiness line, and a grace window the seam
+    // escalates through so a signal-ignoring inhibitor cannot hang teardown.
+    expect(spawned[0]?.stdio.stdin).toBe('ignore')
+    expect(spawned[0]?.graceMs).toBeGreaterThan(0)
+    expect(terminated).toBe(0)
     await fiber.dispose()
-    expect(fake.killed).toBe(true)
-    expect(fake.signalCode).toBe('SIGTERM')
-    // The disposal-initiated exit is expected: no "may sleep again" warning.
+    expect([terminated, awaited]).toEqual([1, 1])
     expect(warn).not.toHaveBeenCalled()
   })
 
-  it('warns when the inhibitor dies while serving, and dispose then has nothing to kill', async () => {
-    const fake = new FakeInhibitor()
-    internals.spawnInhibitor = () => asChild(fake.spawnOk())
-    internals.terminateInhibitor = terminateFake
-    const warn = vi.fn()
-    const ctx = new Context()
-    Object.defineProperty(ctx, 'logger', { value: { warn }, configurable: true })
-    const fiber = ctx.plugin({ inject: [...inject], apply }, new Config({ enabled: true }))
+  it('warns when the inhibitor exits while serving', async () => {
+    const { warn, fiber, ctx } = await mount(fakeSubprocess({
+      done: Promise.resolve({ exitCode: 1, signal: null }),
+    }))
     await fiber.await()
-    fake.exitCode = 1
-    fake.emit('exit', 1, null)
+    await vi.waitFor(() => {
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('exited (code 1'))
+    })
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('the host may sleep again'))
-    await fiber.dispose()
-    expect(fake.killed).toBe(false)
+    await ctx.fiber.dispose()
   })
 
-  it('survives an inhibitor error after spawn instead of crashing the process', async () => {
-    // Without a durable listener this emit is an unhandled 'error'.
-    const fake = new FakeInhibitor()
-    internals.spawnInhibitor = () => asChild(fake.spawnOk())
-    internals.terminateInhibitor = terminateFake
-    const warn = vi.fn()
-    const ctx = new Context()
-    Object.defineProperty(ctx, 'logger', { value: { warn }, configurable: true })
-    const fiber = ctx.plugin({ inject: [...inject], apply }, new Config({ enabled: true }))
-    await fiber.await()
-    expect(() => { fake.emit('error', new Error('kill EPERM')) }).not.toThrow()
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('the host may sleep again'))
-    // Teardown still completes: an 'error' must not reject the disposer.
-    await fiber.dispose()
-    expect(fake.killed).toBe(true)
-  })
-
-  it('stays silent about an error raised by teardown itself', async () => {
-    // An 'error' raised by teardown itself is not a lost inhibitor.
-    const fake = new FakeInhibitor()
-    internals.spawnInhibitor = () => asChild(fake.spawnOk())
-    internals.terminateInhibitor = (child) => {
-      child.emit('error', new Error('kill ESRCH'))
-      terminateFake(child)
-      return undefined
-    }
-    const warn = vi.fn()
-    const ctx = new Context()
-    Object.defineProperty(ctx, 'logger', { value: { warn }, configurable: true })
-    const fiber = ctx.plugin({ inject: [...inject], apply }, new Config({ enabled: true }))
+  it('stays silent when the inhibitor exits because disposal asked it to', async () => {
+    let settle: (() => void) | undefined
+    const done = new Promise<SubprocessOutcome>((resolve) => {
+      settle = () => { resolve({ exitCode: null, signal: 'SIGTERM' }) }
+    })
+    const { warn, fiber } = await mount(fakeSubprocess({ done, terminate: () => { settle?.() } }))
     await fiber.await()
     await fiber.dispose()
-    expect(fake.killed).toBe(true)
+    await done
     expect(warn).not.toHaveBeenCalled()
   })
 
-  it('reports a signal that never landed instead of waiting forever for an exit', async () => {
-    // No 'exit' follows a failed signal, so teardown must not await one.
-    const fake = new FakeInhibitor()
-    fake.pid = 4242
-    internals.spawnInhibitor = () => asChild(fake.spawnOk())
-    internals.terminateInhibitor = () => Object.assign(new Error('kill EPERM'), { code: 'EPERM' })
-    const warn = vi.fn()
-    const ctx = new Context()
-    Object.defineProperty(ctx, 'logger', { value: { warn }, configurable: true })
-    const fiber = ctx.plugin({ inject: [...inject], apply }, new Config({ enabled: true }))
+  it('warns when the seam reports a failure after the child was running', async () => {
+    // pid means the spawn landed, so this is not an activation failure; the
+    // hold is gone all the same.
+    const { warn, fiber, ctx } = await mount(fakeSubprocess({
+      done: Promise.reject(new Error('tree observation lost')),
+    }))
     await fiber.await()
-    await fiber.dispose()
-    expect(fake.killed).toBe(false)
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not release the sleep inhibitor (kill EPERM)'))
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('process 4242'))
+    await vi.waitFor(() => {
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('failed (Error: tree observation lost)'))
+    })
+    await ctx.fiber.dispose()
   })
 
-  it('rejects activation when the inhibitor cannot start', async () => {
-    const fake = new FakeInhibitor()
-    internals.spawnInhibitor = () => {
-      queueMicrotask(() => { fake.emit('error', new Error('spawn caffeinate ENOENT')) })
-      return asChild(fake)
-    }
-    const ctx = new Context()
-    const fiber = ctx.plugin({ inject: [...inject], apply }, new Config({ enabled: true }))
+  it('rejects activation when the platform binary is missing', async () => {
+    // No pid means the spawn itself failed; the seam carries the reason on `done`.
+    const { fiber, ctx } = await mount(fakeSubprocess({
+      pid: -1,
+      done: Promise.reject(new Error('spawn caffeinate ENOENT')),
+    }))
     await expect(fiber).rejects.toThrow(/ENOENT/)
     await ctx.fiber.dispose()
   })
 
-  it('holds a real child through a real Loader composition and releases it with the tree', async () => {
+  it('holds a real child through a real Loader composition and releases the tree', async () => {
     // REAL-composition proof: the flag-shaped row boots through the vendored
-    // Loader exactly as the bundle patch mounts it; only the platform binary
-    // is substituted (a plain Node sleeper), because caffeinate/systemd-inhibit
-    // are absent in CI.
+    // Loader over the shipped subprocess provider, exactly as the bundle patch
+    // mounts it. Only the platform binary is substituted (a plain Node
+    // sleeper), because caffeinate/systemd-inhibit are absent in CI.
     const dir = mkdtempSync(join(tmpdir(), 'dsh-keep-awake-'))
     writeFileSync(join(dir, 'provider.mjs'), [
       "export const name = 'web-startup'",
-      'export function apply(ctx) { ctx.provide("webStartup", { trustedHosts: [], keepAwake: true }) }',
+      'export function apply(ctx) { ctx.provide("webStartup", { trustedHosts: [], keepAwake: true }); ctx.provide("subprocess", globalThis.__seam) }',
       '',
     ].join('\n'))
     writeFileSync(join(dir, 'keep-awake.mjs'), [
       "export const name = 'web-keep-awake'",
-      "export const inject = ['webStartup']",
+      "export const inject = ['webStartup', 'subprocess']",
       'export const apply = (ctx, config) => globalThis.__keepAwakeApply(ctx, config)',
       '',
     ].join('\n'))
     writeFileSync(join(dir, 'cordis.yml'), [
       '- id: keep-awake',
       `  name: ${pathToFileURL(join(dir, 'keep-awake.mjs')).href}`,
-      '  inject: [webStartup]',
+      '  inject: [webStartup, subprocess]',
       '  config:',
       '    enabled: !!js ctx.webStartup.keepAwake === true',
       '- id: provider',
       `  name: ${pathToFileURL(join(dir, 'provider.mjs')).href}`,
       '',
     ].join('\n'))
-    const globals = globalThis as unknown as { __keepAwakeApply: typeof apply }
+    // The shipped provider does the real spawning, terminating, and exit
+    // observation; only the argv is swapped, because caffeinate and
+    // systemd-inhibit are absent in CI.
+    const provider = new Context()
+    await provider.plugin(SubprocessLocal)
+    const held: SubprocessHandle[] = []
+    const globals = globalThis as unknown as { __keepAwakeApply: typeof apply; __seam: SubprocessRuntime }
     globals.__keepAwakeApply = apply
-    const held: ChildProcess[] = []
-    internals.spawnInhibitor = () => {
-      const child = originalSpawn({ command: process.execPath, args: ['-e', 'setTimeout(() => {}, 120000)'] })
-      held.push(child)
-      return child
-    }
+    globals.__seam = {
+      spawn: (spec: SubprocessSpawnSpec) => {
+        const handle = provider.subprocess.spawn({ ...spec, argv: [process.execPath, '-e', 'setTimeout(() => {}, 120000)'] })
+        held.push(handle)
+        return handle
+      },
+    } as SubprocessRuntime
 
     const ctx = new Context()
     await ctx.plugin(Loader)
     ctx.loader.builtins.include = Include
     await ctx.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(join(dir, 'cordis.yml')).href } })
     await ctx.loader.await()
-    const unloaded = [...ctx.loader.entries()].filter(entry => entry.fiber === undefined && !entry.disabled)
-    expect(unloaded).toEqual([])
+    expect([...ctx.loader.entries()].filter(entry => entry.fiber === undefined && !entry.disabled)).toEqual([])
     // World verification: one live inhibitor while the tree lives, none after.
     expect(held).toHaveLength(1)
-    expect(held[0]!.exitCode).toBeNull()
-    expect(held[0]!.signalCode).toBeNull()
+    expect(held[0]!.pid).toBeGreaterThan(0)
     await ctx.fiber.dispose()
-    expect(held[0]!.exitCode !== null || held[0]!.signalCode !== null).toBe(true)
-  })
-
-  it('holds a real scrubbed-env child through the default spawn and releases it on dispose', async () => {
-    // The default internals.spawnInhibitor with a real process: platform
-    // binaries are absent in CI, so the command under test is a plain Node
-    // sleeper — the spawn/kill/await-exit lifecycle is what this proves.
-    const sleeper: InhibitorCommand = { command: process.execPath, args: ['-e', 'setTimeout(() => {}, 120000)'] }
-    const child = originalSpawn(sleeper)
-    await new Promise<void>((resolve, reject) => {
-      child.once('spawn', resolve)
-      child.once('error', reject)
-    })
-    expect(child.pid).toBeGreaterThan(0)
-    const exited = new Promise<void>((resolve) => { child.once('exit', () => { resolve() }) })
-    // The production terminator: a POSIX group signal, so anything the
-    // inhibitor spawned dies with it rather than outliving teardown.
-    originalTerminate(child)
-    await exited
-    expect(child.exitCode !== null || child.signalCode !== null).toBe(true)
+    expect(await held[0]!.waitForExit()).toBe(true)
+    await provider.fiber.dispose()
   })
 })
