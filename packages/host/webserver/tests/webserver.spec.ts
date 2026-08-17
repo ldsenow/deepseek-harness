@@ -123,16 +123,14 @@ describe('real Loader composition', () => {
     // named route matches; index taps are the owner's to apply; the seat
     // admits exactly one owner and the disposer releases it.
     expect((await request(port, '/no/such/route')).status).toBe(404)
-    // The nonce reaches every tap, so a tap injecting a script can carry it.
-    const untap = server.tapIndex((html, nonce) =>
-      html.replace('<head>', `<head><script nonce="${nonce}">window.__T__=1</script>`))
-    expect(server.applyIndexTaps('<head></head>', 'n0nce')).toContain('nonce="n0nce"')
+    const untap = server.tapIndex(html =>
+      html.replace('<head>', '<head><script>window.__T__=1</script>'))
     const releaseFallback = server.registerFallback((req, res) => {
       // Decode like a real static server would — a malformed %-escape throws
       // here, probing the webserver's per-request error containment.
       decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname)
       res.writeHead(200, { 'content-type': 'text/html' })
-      res.end(server.applyIndexTaps('<head></head><body>shell</body>', 'n0nce'))
+      res.end(server.applyIndexTaps('<head></head><body>shell</body>'))
     })
     expect(() => server.registerFallback(() => {})).toThrow(/fallback already registered/)
     expect((await request(port, '/no/such/route')).body).toContain('__T__')

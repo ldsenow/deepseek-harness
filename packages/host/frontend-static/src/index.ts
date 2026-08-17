@@ -13,7 +13,6 @@
 
 import type { ServerResponse } from 'node:http'
 import { readFile, realpath } from 'node:fs/promises'
-import { randomBytes } from 'node:crypto'
 import { realpathSync } from 'node:fs'
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -53,26 +52,17 @@ const MIME: Record<string, string> = {
  * @param distRoot - absolute dist root directory (resolved by the caller).
  * @param distIndex - absolute path of index.html inside distRoot.
  * @param renderIndex - produces the index.html body (index-tap injection) for
- * `/` and every SPA fallback, given the response's script nonce.
+ * `/` and every SPA fallback.
  */
 export async function serveStatic(
   pathname: string, res: ServerResponse, distRoot: string, distIndex: string,
-  renderIndex: (nonce: string) => Promise<string>,
+  renderIndex: () => Promise<string>,
 ): Promise<void> {
   const target = resolve(normalize(join(distRoot, pathname)))
   const forbid = (): void => { res.writeHead(403); res.end() }
   const serveIndex = async (): Promise<void> => {
-    // Fresh per document: a reused nonce keeps working for an injection that
-    // once observed it.
-    const nonce = randomBytes(16).toString('base64')
-    const body = await renderIndex(nonce)
-    res.writeHead(200, {
-      ...SECURITY_HEADERS,
-      'content-type': MIME['.html'],
-      'content-security-policy': `${CSP_DIRECTIVES}; script-src 'self' 'unsafe-eval' 'nonce-${nonce}'`,
-      'referrer-policy': 'no-referrer',
-    })
-    res.end(body)
+    res.writeHead(200, { 'content-type': MIME['.html'] })
+    res.end(await renderIndex())
   }
   // `sep`, not '/': resolve() emits backslashes on Windows, where a '/' suffix
   // would reject every legitimate subpath as traversal.
@@ -86,36 +76,13 @@ export async function serveStatic(
     if (!within(resolved, distRoot)) { forbid(); return }
     const body = await readFile(resolved)
     // `target`, not `resolved`: a link's own name decides its type.
-    res.writeHead(200, { ...SECURITY_HEADERS, 'content-type': MIME[extname(target)] ?? 'application/octet-stream' })
+    res.writeHead(200, { 'content-type': MIME[extname(target)] ?? 'application/octet-stream' })
     res.end(body)
   } catch {
     // Absent, a directory, or removed mid-read: SPA routing owns every miss.
     await serveIndex()
   }
 }
-
-/** Sent on every static response, documents and assets alike. */
-const SECURITY_HEADERS = { 'x-content-type-options': 'nosniff' } as const
-
-/**
- * The Content-Security-Policy every index response carries; what it defends
- * and why is in the package README. Three relaxations are load-bearing and
- * must not be tightened without replacing what depends on them: `'unsafe-eval'`
- * for the client code runner's `new Function`, inline `style-src` for the
- * `style` attributes shiki and KaTeX emit, and remote `img-src` for the images
- * markdown renders.
- */
-const CSP_DIRECTIVES = [
-  "default-src 'self'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob: https: http:",
-  "font-src 'self' data:",
-  "connect-src 'self'",
-  "object-src 'none'",
-  "base-uri 'none'",
-  "frame-ancestors 'none'",
-  "form-action 'none'",
-].join('; ')
 
 /**
  * Whether one absolute path is the root itself or sits beneath it.
@@ -137,8 +104,8 @@ export function apply(ctx: Context, config: Config): void {
   // link) would otherwise read as an escape on every request.
   const distIndex = realpathSync(config.distIndex)
   const distRoot = dirname(distIndex)
-  const renderIndex = async (nonce: string): Promise<string> =>
-    ctx.webServer.applyIndexTaps(await readFile(distIndex, 'utf8'), nonce)
+  const renderIndex = async (): Promise<string> =>
+    ctx.webServer.applyIndexTaps(await readFile(distIndex, 'utf8'))
   ctx.effect(() => ctx.webServer.registerFallback(async (req, res) => {
     // Non-GET/HEAD without a matching named route is 405 (fallback-only
     // semantics: named routes own their method handling).

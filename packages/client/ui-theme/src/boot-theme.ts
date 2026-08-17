@@ -7,9 +7,9 @@
 
 import { DEFAULT_PREFERENCE, type ThemePreference } from './theme-settings.ts'
 
-/** Build the inline script for one schema-validated built-in preference, carrying the response nonce. */
-function bootThemeScript(preference: ThemePreference, nonce: string): string {
-  return `<script nonce="${nonce}">(() => {
+/** Build the inline script for one schema-validated built-in preference. */
+function bootThemeScript(preference: ThemePreference): string {
+  return `<script>(() => {
   const preference = ${JSON.stringify(preference)}
   const systemDark = preference === 'system'
     && typeof matchMedia !== 'undefined'
@@ -25,16 +25,14 @@ function bootThemeScript(preference: ThemePreference, nonce: string): string {
  * the shell mount and module script. Body-less fragments receive it at the
  * end, where the HTML parser has already synthesized a body.
  * @param html - Raw application index HTML.
- * @param nonce - the response's script nonce, carried on the injected tag.
  * @param preference - Current Host-backed built-in preference.
  * @returns HTML containing the theme bootstrap.
  */
 export function injectBootTheme(
   html: string,
-  nonce: string,
   preference: ThemePreference = DEFAULT_PREFERENCE,
 ): string {
-  const script = bootThemeScript(preference, nonce)
+  const script = bootThemeScript(preference)
   const body = /<body(?:\s[^>]*)?>/i.exec(html)
   if (body === null) return `${html}${script}`
   const at = body.index + body[0].length

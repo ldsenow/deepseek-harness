@@ -35,15 +35,6 @@ export interface WebRoute {
   handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
 }
 
-/**
- * One index.html transform. The `nonce` is the serving owner's per-response
- * script nonce: a tap that injects an executable `<script>` MUST carry it as
- * that tag's `nonce` attribute, or a Content-Security-Policy naming the nonce
- * will refuse to run the injected code. Taps that inject nothing executable
- * ignore the argument.
- */
-export type IndexTap = (html: string, nonce: string) => string
-
 /** One exact-path HTTP upgrade registration. */
 export interface WebUpgradeRoute {
   /** Absolute pathname, no trailing slash. */
@@ -83,7 +74,7 @@ export class WebServer extends Service {
   private readonly prefixes = new Map<string, WebRoute>()
   private readonly upgrades = new Map<string, WebUpgradeRoute>()
   private readonly upgradedSockets = new Set<Duplex>()
-  private readonly indexTaps: IndexTap[] = []
+  private readonly indexTaps: ((html: string) => string)[] = []
   private fallback: WebRoute['handler'] | undefined
   private server!: Server
   private listenedPort!: number
@@ -157,10 +148,10 @@ export class WebServer extends Service {
   /**
    * Register an index.html transform, applied by the fallback owner to every
    * index response ({@link applyIndexTaps}) in registration order.
-   * @param transform - pure html-to-html function; see {@link IndexTap} for the nonce obligation.
+   * @param transform - pure html-to-html function.
    * @returns the disposer removing the transform.
    */
-  tapIndex(transform: IndexTap): () => void {
+  tapIndex(transform: (html: string) => string): () => void {
     this.indexTaps.push(transform)
     return () => {
       const at = this.indexTaps.indexOf(transform)
@@ -298,12 +289,11 @@ export class WebServer extends Service {
    * Run an index.html body through the registered taps in registration order
    * — called by the fallback owner on every index response it renders.
    * @param html - the raw index.html body.
-   * @param nonce - the response's script nonce, forwarded to every tap.
    * @returns the transformed body.
    */
-  applyIndexTaps(html: string, nonce: string): string {
+  applyIndexTaps(html: string): string {
     let out = html
-    for (const transform of this.indexTaps) out = transform(out, nonce)
+    for (const transform of this.indexTaps) out = transform(out)
     return out
   }
 }

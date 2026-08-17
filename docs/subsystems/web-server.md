@@ -46,7 +46,7 @@ interface Config {
 
 ## The service
 
-`WebServer` (`ctx.webServer`) listens immediately on activation; a listen failure (EADDRINUSE…) rejects initialization, and the boot process reports the failed fiber. `register(route)` adds one named route and returns its disposer; a duplicate `(kind, path)` throws because route patterns are a composition-level contract and a collision is a misconfiguration. `tapIndex(transform)` adds a pure html-to-html transform applied to every index response — `/` and each SPA fallback — in registration order, receiving that response's script nonce; [dsh-client-modules](../../packages/client/modules) uses it to inject the boot manifest, carrying the nonce so the serving owner's Content-Security-Policy admits it. `port` reads the listening port, including the port assigned by the OS when `config.port` is 0; `scheme` reads `'https'` when TLS material is configured, else `'http'`.
+`WebServer` (`ctx.webServer`) listens immediately on activation; a listen failure (EADDRINUSE…) rejects initialization, and the boot process reports the failed fiber. `register(route)` adds one named route and returns its disposer; a duplicate `(kind, path)` throws because route patterns are a composition-level contract and a collision is a misconfiguration. `tapIndex(transform)` adds a pure html-to-html transform applied to every index response — `/` and each SPA fallback — in registration order; [dsh-client-modules](../../packages/client/modules) uses it to inject the boot manifest. `port` reads the listening port, including the port assigned by the OS when `config.port` is 0; `scheme` reads `'https'` when TLS material is configured, else `'http'`.
 
 A request whose handling throws (a malformed %-escape hitting `decodeURIComponent`, a client dropping mid-body) is logged as a warning and answered 400 — or the socket destroyed when headers are already out — never a process exit. Disposal pairs `close()` with `closeAllConnections()` because a handler may hold its response open (SSE) and such connections never end on their own; without the force-close, teardown would hang. The package never prints: the URL line belongs to the shell. Per-package operational detail, including the dev-mode bundle watch pipeline, stays in the [README](../../packages/host/webserver/README.md).
 
@@ -94,20 +94,19 @@ registerFallback(handler: WebRoute['handler']): () => void
 /**
  * Register an index.html transform, applied by the fallback owner to every
  * index response ({@link applyIndexTaps}) in registration order.
- * @param transform - pure html-to-html function; see {@link IndexTap} for the nonce obligation.
+ * @param transform - pure html-to-html function.
  * @returns the disposer removing the transform.
  */
-tapIndex(transform: IndexTap): () => void
+tapIndex(transform: (html: string) => string): () => void
 
 /**
  * Run an index.html body through the registered taps in registration order
  * — called by the fallback owner on every index response it renders.
  * @param html - the raw index.html body.
- * @param nonce - the response's script nonce, forwarded to every tap.
  * @returns the transformed body.
  */
-applyIndexTaps(html: string, nonce: string): string
+applyIndexTaps(html: string): string
 ```
 
-Source: [`packages/host/webserver/src/index.ts:74`](../../packages/host/webserver/src/index.ts)
+Source: [`packages/host/webserver/src/index.ts:65`](../../packages/host/webserver/src/index.ts)
 <!-- END GENERATED cordis-surface -->
