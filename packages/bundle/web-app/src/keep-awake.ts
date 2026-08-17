@@ -50,8 +50,18 @@ const WINDOWS_HOLD = [
   'while ($true) { Start-Sleep -Seconds 3600 }',
 ].join(' ')
 
-/** SIGTERM-to-SIGKILL window at teardown: long enough for a signal-handling inhibitor to release its lock. */
+/** SIGTERM-to-SIGKILL window the seam escalates through at teardown. */
 const TERMINATE_GRACE_MS = 5_000
+
+/**
+ * Bound on the disposer's wait for the tree to exit: the grace window plus room
+ * for SIGKILL to land and be observed. A healthy inhibitor dies on SIGTERM in
+ * milliseconds, so this only matters when the signal cannot land — a group id
+ * reused by a foreign group (EPERM), or an unkillable member. Waiting past it
+ * would wedge dsh shutdown, which is worse than the leaked inhibitor the OS
+ * releases when that orphan finally dies; the disposer warns and lets dsh exit.
+ */
+const RELEASE_TIMEOUT_MS = TERMINATE_GRACE_MS + 2_000
 
 /**
  * The inhibitors print nothing in normal operation. Collecting a small bound
@@ -108,6 +118,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.effect(() => async () => {
     disposed = true
     held.terminate()
-    await held.waitForExit()
+    const released = await held.waitForExit(AbortSignal.timeout(RELEASE_TIMEOUT_MS))
+    if (!released) {
+      ctx.logger.warn(`web-keep-awake: sleep inhibitor did not exit within teardown; process ${String(held.pid)} may keep the host awake until it is killed`)
+    }
   }, 'web-keep-awake: sleep inhibitor')
 }

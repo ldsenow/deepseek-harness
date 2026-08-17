@@ -12,7 +12,7 @@ node 半侧在桥接或 upgrade 前守卫 `/api` 下的每个入口（`src/api-r
 
 来自非回环 peer 的请求只有在部署配置了 `pairingTokenEnv` 且请求以 `dsh_auth` cookie 或 `Authorization: Bearer` 请求头出示它所指向的 token 时才被放行（`src/api-auth.ts`）；比较在 sha256 摘要上恒定时间进行。
 
-配置携带引用，而不是机密本身。`pairingTokenEnv` 是一个凭据引用，在加载时经 [`ctx.credentials`](../../credentials/credentials/README.md) 解析一次，因此 token 可以存放在环境变量、受管凭据存储或 `.env` 层中，任何回显配置的表面都无法泄漏它。引用解析不到取值、解析出的 token 不足 16 个 `A-Za-z0-9_-` 字符，以及在没有组合 credentials 服务时指定引用，都会让加载报错。由于解析每次加载只做一次，轮换后的 token 在下次启动生效——放行本身是同步的。
+配置携带引用，而不是机密本身。`pairingTokenEnv` 是一个凭据引用，在加载时经 [`ctx.credentials`](../../credentials/credentials/README.md) 解析一次，因此 token 可以存放在环境变量、受管凭据存储或 `.env` 层中，任何回显配置的表面都无法泄漏它。引用解析不到取值、解析出的 token 不足 16 个 `A-Za-z0-9_-` 字符，以及在没有组合 credentials 服务时指定引用，都会让加载报错——因此设置了 `pairingTokenEnv` 的组合必须在该行上注入 `credentials`，使该能力缝在本插件加载前处于活跃状态。由于解析每次加载只做一次，轮换后的 token 在下次启动生效——放行本身是同步的。
 
 回环判定读取 socket peer 地址（`req.socket.remoteAddress`），绝不读客户端可控的 `Host` 头：在全接口绑定上，任何能到达 socket 的客户端都可以声称 `Host: localhost`，因此基于头的豁免会绕过 token。上文的 Host 栅栏对每个请求仍然运行，但它本身不承担任何认证。
 

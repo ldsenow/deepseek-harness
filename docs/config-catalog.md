@@ -415,9 +415,11 @@ export interface ConnectionConfig {
    * configuration never carries the token itself. A reference that resolves to
    * nothing, or to a token that is not at least 16 characters of
    * `A-Za-z0-9_-`, fails the load, as does naming one without a composed
-   * credentials service. Required together with a non-empty `trustedHosts`: a
-   * declared authority without a token could admit no request. A loopback peer
-   * never needs it.
+   * credentials service — so a composition that sets this must also inject
+   * `credentials` on this row, guaranteeing the seam is active before this
+   * plugin loads. Required together with a non-empty `trustedHosts`: a declared
+   * authority without a token could admit no request. A loopback peer never
+   * needs it.
    */
   pairingTokenEnv?: string
   /** Maximum buffered JSON body for every `/api` request. */

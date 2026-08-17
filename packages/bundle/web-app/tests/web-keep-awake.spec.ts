@@ -108,6 +108,20 @@ describe('web-keep-awake plugin', () => {
     expect(warn).not.toHaveBeenCalled()
   })
 
+  it('abandons a tree that will not exit rather than hanging dsh shutdown', async () => {
+    // waitForExit resolving false means the signal could not land (EPERM on a
+    // recycled group, an unkillable member). The disposer must return, not
+    // await forever, and name the process it left holding the lock.
+    const { warn, fiber } = await mount(fakeSubprocess({
+      done: new Promise(() => {}),
+      waitForExit: async () => false,
+    }))
+    await fiber.await()
+    await fiber.dispose()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('did not exit within teardown'))
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('process 4242'))
+  })
+
   it('warns when the seam reports a failure after the child was running', async () => {
     // pid means the spawn landed, so this is not an activation failure; the
     // hold is gone all the same.
