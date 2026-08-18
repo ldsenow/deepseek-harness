@@ -17,7 +17,7 @@ import { isLoopbackAddress, isLoopbackHostname } from '@deepseek-ai/dsh-loopback
 
 ## The two are not interchangeable
 
-A hostname is what a client **claims**; a socket peer address is what the kernel **observed**. On an all-interfaces bind any client that reaches the socket can send `Host: localhost`, so a route deciding whether its caller is local must read `isLoopbackAddress` — deriving that decision from a hostname is a forgeable exemption, which is how [the /api token bypass](../../../.agents/notes/implemented/feature/2026-08-15-web-lan-pairing-token-tls.md) happened. `isLoopbackHostname` answers a different question: which authority a URL names, for the DNS-rebinding fence and for a page describing its own location.
+A hostname is what a client **claims**; a socket peer address is what the kernel **observed**. On an all-interfaces bind any client that reaches the socket can send `Host: localhost`, so a route deciding whether its caller is local must read `isLoopbackAddress`: deriving that decision from a hostname would exempt any caller willing to send that header, which is why [pairing-token admission](../../client/connection/README.md) reads the peer. `isLoopbackHostname` answers a different question: which authority a URL names, for the DNS-rebinding fence and for a page describing its own location.
 
 Both fail closed. An address the predicate does not recognize — an unusual literal form, a non-IP transport, `undefined` — is not loopback, so a caller keeps whatever authentication the route requires rather than being exempted by a parsing gap.
 
@@ -35,5 +35,5 @@ None; this package neither assembles nor sends a provider request.
 
 ## Known Limitations and Deferred Work
 
-- **IPv4 literals only in the dotted-quad form** — `127.1`, `2130706433`, and zero-padded octets classify as non-loopback. Node reports peer addresses in canonical form and browsers normalize URL hostnames, so no current consumer produces the other spellings; the bias is toward requiring authentication, never toward exempting.
+- **Canonical dotted-quad IPv4 only** — `127.1`, `2130706433`, and zero-padded octets such as `127.0.0.01` classify as non-loopback. No current consumer produces those spellings: node reports peer addresses canonically, and the `/api` fence parses `Host` through WHATWG `URL`, which rewrites every short, padded, and integer form to `127.0.0.1` before the predicate runs. The bias is toward requiring authentication, never toward exempting.
 - **No IPv6 zone-index handling** — a scoped `::1%lo0` is not recognized. Same direction of failure, and no observed peer address carries a zone.

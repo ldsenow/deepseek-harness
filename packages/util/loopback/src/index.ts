@@ -17,12 +17,18 @@ export function isLoopbackHostname(hostname: string): boolean {
   return isIpv4Loopback(hostname)
 }
 
-/** Whether a dotted-quad literal falls in IPv4 `127.0.0.0/8`. */
+/**
+ * Whether a literal is canonical dotted-quad IPv4 inside `127.0.0.0/8`.
+ * Octets must carry no leading zero: `127.0.0.01` denotes loopback to a
+ * resolver but is not the form node reports or WHATWG emits, and some parsers
+ * read a leading zero as octal, so it classifies as non-loopback like every
+ * other non-canonical spelling.
+ */
 function isIpv4Loopback(literal: string): boolean {
   const parts = literal.split('.')
   return parts.length === 4
     && parts[0] === '127'
-    && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255)
+    && parts.every(part => /^(0|[1-9]\d{0,2})$/.test(part) && Number(part) <= 255)
 }
 
 /**

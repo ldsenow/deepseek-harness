@@ -20,9 +20,9 @@ export const inject = ['invariants']
  * two pieces of state this package does own are unobservable from here: the
  * sleep-inhibitor child is held in `keep-awake`'s effect closure and settles
  * during that disposer, before any invariant pass could read it, and the TLS
- * material is a file pair whose only runtime relation — the server serving
- * the same certificate it generated — belongs to the webserver's own
- * invariant, which already probes the bound listener.
+ * material is written once under a file lock before the webserver row reads
+ * its paths, then never mutated, so its cert/key pairedness is settled at
+ * generation rather than being a relation a later pass could observe.
  */
 const install: InvariantInstaller = () => {}
 

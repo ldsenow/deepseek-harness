@@ -111,13 +111,18 @@ describe('web-keep-awake plugin', () => {
   it('abandons a tree that will not exit rather than hanging dsh shutdown', async () => {
     // waitForExit resolving false means the signal could not land (EPERM on a
     // recycled group, an unkillable member). The disposer must return, not
-    // await forever, and name the process it left holding the lock.
+    // await forever, and name the process it left holding the lock. Capturing
+    // the argument is the point: a mock that ignores it stays green against an
+    // unbounded `waitForExit()`, which is the hang this test exists to reject.
+    let bound: AbortSignal | undefined
     const { warn, fiber } = await mount(fakeSubprocess({
       done: new Promise(() => {}),
-      waitForExit: async () => false,
+      waitForExit: async (signal?: AbortSignal) => { bound = signal; return false },
     }))
     await fiber.await()
     await fiber.dispose()
+    expect(bound).toBeInstanceOf(AbortSignal)
+    expect(bound!.aborted).toBe(false)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('did not exit within teardown'))
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('process 4242'))
   })

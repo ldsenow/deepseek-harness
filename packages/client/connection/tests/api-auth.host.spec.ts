@@ -97,4 +97,34 @@ describe('admitApiRequest', () => {
     expect(admitApiRequest(request({ host: 'harness.example', authorization: `Basic ${TOKEN}` }), TRUSTED, TOKEN, false)).toBe(false)
     expect(admitApiRequest(request({ host: 'harness.example', cookie: 'no-separator; other=1' }), TRUSTED, TOKEN, false)).toBe(false)
   })
+
+  it.each([
+    ['a name the cookie name is a prefix of', `dsh_auth_extra=${TOKEN}`],
+    ['a name ending in the cookie name', `xdsh_auth=${TOKEN}`],
+    ['the token as some other cookie value', `session=${TOKEN}`],
+    ['the token as a cookie name', `${TOKEN}=1`],
+    ['an empty pairing cookie', 'dsh_auth='],
+  ])('refuses %s', (_kind, cookie) => {
+    // The cookie name is compared whole, so a neighbouring name carrying a
+    // valid token never satisfies it — the parser bug that turns a substring
+    // test into an authentication bypass.
+    expect(admitApiRequest(request({ host: 'harness.example', cookie }), TRUSTED, TOKEN, false)).toBe(false)
+  })
+
+  it('admits a valid pairing cookie sent alongside an invalid one', () => {
+    // A browser can hold duplicates for the same name across paths or a stale
+    // domain, and sends them all; a rotated-but-not-yet-evicted value must not
+    // lock out the device whose current value is right.
+    expect(admitApiRequest(request({
+      host: 'harness.example',
+      cookie: `dsh_auth=stale-token-0123456789; dsh_auth=${TOKEN}`,
+    }), TRUSTED, TOKEN, false)).toBe(true)
+  })
+
+  it('refuses a token presented under a lowercase Bearer scheme', () => {
+    // RFC 7235 makes the auth-scheme case-insensitive, so this is stricter than
+    // the spec. It is pinned rather than fixed silently: the shipped browser
+    // half sends `Bearer`, and loosening an auth parser is its own decision.
+    expect(admitApiRequest(request({ host: 'harness.example', authorization: `bearer ${TOKEN}` }), TRUSTED, TOKEN, false)).toBe(false)
+  })
 })
