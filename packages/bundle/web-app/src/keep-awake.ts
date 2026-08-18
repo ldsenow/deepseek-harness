@@ -3,11 +3,13 @@
  * keep-awake child for the dsh process lifetime so idle sleep cannot cut off
  * running sessions or paired LAN devices. The inhibitor is the platform's own
  * facility — `caffeinate -i` on macOS, `systemd-inhibit` on Linux, a PowerShell
- * `SetThreadExecutionState` holder on Windows — so disposal or process death
- * always releases the lock with the child. An inhibitor that cannot start
- * rejects activation: a deployment that asked to stay awake must never silently
- * serve without it. An inhibitor that dies later logs a warning and serving
- * continues.
+ * `SetThreadExecutionState` holder on Windows — so the OS drops the lock when
+ * that child exits, and disposal is what ends it. A dsh killed abruptly
+ * (`SIGKILL`, power loss) runs no disposer and orphans the child, which holds
+ * the inhibitor until it is killed or the machine restarts. A spawn that
+ * produces no pid rejects activation: a deployment that asked to stay awake
+ * must never silently serve without it. A child that dies later logs a warning
+ * and serving continues.
  * @module @deepseek-ai/dsh-web-app/keep-awake
  */
 
@@ -57,9 +59,12 @@ const TERMINATE_GRACE_MS = 5_000
  * Bound on the disposer's wait for the tree to exit: the grace window plus room
  * for SIGKILL to land and be observed. A healthy inhibitor dies on SIGTERM in
  * milliseconds, so this only matters when the signal cannot land — a group id
- * reused by a foreign group (EPERM), or an unkillable member. Waiting past it
- * would wedge dsh shutdown, which is worse than the leaked inhibitor the OS
- * releases when that orphan finally dies; the disposer warns and lets dsh exit.
+ * reused by a foreign group (EPERM), or an unkillable member. This disposer
+ * then warns and returns rather than waiting on a signal that cannot land,
+ * leaving an orphan the OS releases when it finally dies. The bound is local
+ * to this disposer, not a shutdown guarantee: `dsh-subprocess-local` awaits
+ * the same tree without one in its own disposer, and the CLI's whole-tree
+ * shutdown budget is the ceiling that actually ends a stuck teardown.
  */
 const RELEASE_TIMEOUT_MS = TERMINATE_GRACE_MS + 2_000
 
