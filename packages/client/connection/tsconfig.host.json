@@ -10,6 +10,7 @@
     "src/api-path.ts",
     "src/api-request-trust.ts",
     "src/auth-wire.ts",
+    "src/gateway-authority.ts",
     "src/http-bridge.ts",
     "src/index.ts",
     "src/invariant.ts",

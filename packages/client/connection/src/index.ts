@@ -10,6 +10,7 @@ import { bridge, DEFAULT_MAX_REQUEST_BODY_BYTES } from './http-bridge.ts'
 import { assertTrustedAuthority } from './api-request-trust.ts'
 import { admitApiRequest, resolvePairingToken } from './api-auth.ts'
 import { isLoopbackAddress } from '@deepseek-ai/dsh-loopback'
+import { isLoopbackOnlyNamespace } from './gateway-authority.ts'
 import { HostConnectionService } from './rpc-host.ts'
 import { rejectWebSocketUpgrade, WebSocketDownlinks } from './websocket-downlink.ts'
 
@@ -97,9 +98,10 @@ export const Config: z<ConnectionConfig> = z.object({
  * configuration and `credentials.describe` reports whether an arbitrary
  * environment-variable name is configured and where from, which is
  * reconnaissance no anonymous caller should have. `trustedHosts` is a
- * DNS-rebinding fence, explicitly not authentication, so the whole
- * configuration plane stays loopback-same-origin until a real authentication
- * layer exists. `llm.discoverModels` belongs to that plane on both counts: it
+ * DNS-rebinding fence, not authentication, and the pairing token authenticates
+ * a device rather than a location, so the configuration plane stays pinned to a
+ * loopback socket peer even for an authenticated caller; loosening that is an
+ * open decision, not an omission. `llm.discoverModels` belongs to that plane on both counts: it
  * carries a draft credential, and it makes the HOST issue a GET to a URL the
  * caller chose and reports back the status or the parsed body — an anonymous
  * LAN caller would have a probe for whatever the host can reach and the
@@ -109,10 +111,10 @@ export const Config: z<ConnectionConfig> = z.object({
  * it carries provider ids, display names, and model lists — no endpoints,
  * keys, or key state — and a LAN client's model picker legitimately needs it.
  *
- * The set spans both endpoint forms this channel carries: the API Proxy's
- * dot-form methods and the Typert Gateway's `namespace/method` slash form.
- * They are one namespace here because the pin is applied once, ahead of the
- * choice between the two handlers.
+ * This set names the API Proxy's dot-form methods only. The Typert Gateway's
+ * `namespace/method` form is classified per namespace in
+ * [gateway-authority](./gateway-authority.ts); {@link isPrivilegedEndpoint}
+ * applies both, once, ahead of the choice between the two handlers.
  */
 const PRIVILEGED_METHODS = new Set([
   // A preset composition names the plugins a session runs, so reading one is
@@ -144,10 +146,22 @@ const PRIVILEGED_METHODS = new Set([
   'credentials.set',
   'credentials.unset',
   'llm.discoverModels',
-  // The live Loader roster is the same composition reconnaissance
-  // `agentPreset.read` is pinned for; its settings tab is loopback-only too.
-  'pluginInventory/list',
 ])
+
+/**
+ * Whether an endpoint stays pinned to a loopback peer. Dot-form API Proxy
+ * methods are named individually; the Gateway's slash form is decided by its
+ * namespace ([gateway-authority](./gateway-authority.ts)), because that
+ * endpoint space grows with every `./typert` export and a per-method list
+ * would default each new one to LAN-reachable.
+ * @param endpoint - the endpoint identity, either `method` or `namespace/method`.
+ * @returns true when only a loopback socket peer may reach it.
+ */
+function isPrivilegedEndpoint(endpoint: string): boolean {
+  if (PRIVILEGED_METHODS.has(endpoint)) return true
+  const separator = endpoint.indexOf('/')
+  return separator !== -1 && isLoopbackOnlyNamespace(endpoint.slice(0, separator))
+}
 
 /**
  * Mounts the API gateway under the browser transport prefix. Every request on
@@ -172,7 +186,7 @@ export async function apply(ctx: Context, config?: ConnectionConfig): Promise<vo
   const pairingToken = await resolvePairingToken(ctx, config?.pairingTokenEnv)
   if (ctx.get('apiProxy') !== undefined) assertImageBodyCapacity(ctx, maxRequestBodyBytes)
   const connection = new HostConnectionService(ctx, trustedHosts, pairingToken)
-  const fetchHandler = connection.createSharedFetchHandler(API_PATH, endpoint => PRIVILEGED_METHODS.has(endpoint), {
+  const fetchHandler = connection.createSharedFetchHandler(API_PATH, isPrivilegedEndpoint, {
     async fetch(request) {
       const pathname = new URL(request.url).pathname
       if (request.method === 'GET' && (pathname === MUX_EVENTS_PATH || pathname === HOST_EVENTS_PATH)) {

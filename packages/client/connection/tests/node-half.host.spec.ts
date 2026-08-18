@@ -287,6 +287,65 @@ describe('connection node half', () => {
     await fiber.dispose()
   })
 
+  it('pins every method of a loopback-only Gateway namespace, including ones no list names', async () => {
+    // The Gateway claims any `namespace/method` a live TypertRemoteService
+    // exposes, so a per-method pin leaves each newly added endpoint reachable
+    // by any paired device. dynamicCordisRunner is the case that matters: it
+    // reports every dynamic plugin across all sessions and runs host code.
+    const ctx = new Context()
+    const routes: WebRoute[] = []
+    ctx.provide('webServer', fakeHttpServer(routes, []) as WebServer)
+    ctx.provide('apiProxy', {} as unknown as ApiProxy)
+    ctx.provide('credentials', fakeCredentials() as never)
+    const fiber = ctx.plugin({ inject: [...inject], apply }, { trustedHosts: ['harness.example'], pairingTokenEnv: TOKEN_REF })
+    await fiber.await()
+    const connection = ctx.get('connection') as HostConnectionHandle
+    const reached: string[] = []
+    const remove = connection.rpc.intercept(
+      '/api',
+      endpoint => endpoint.includes('/'),
+      async (endpoint) => {
+        reached.push(endpoint)
+        return { ok: true, value: null }
+      },
+      { authority: 'trusted-host' },
+    )
+    const route = routes.find(candidate => candidate.path === API_PATH)!
+
+    for (const method of [
+      'dynamicCordisRunner/inventory', 'dynamicCordisRunner/invoke',
+      'dynamicCordisRunner/runHostHalf', 'dynamicCordisRunner/resolveRequestRun',
+      'dynamicCordisRunner/aMethodAddedLater',
+      // An unknown namespace fails closed rather than defaulting LAN-reachable.
+      'somethingUnclassified/read',
+    ]) {
+      const denied = fakeResponse()
+      await route.handler(
+        fakePost(authed({ host: 'harness.example' }), `/api/${method}`, {
+          type: 'client-request', rpcId: RpcId('rpc-ns'), method, payload: {},
+        }, LAN_PEER),
+        denied.response,
+      )
+      expect([method, denied.state.status]).toEqual([method, 403])
+    }
+    // Denied before dispatch, every one of them.
+    expect(reached).toEqual([])
+
+    // The same namespace answers a genuine loopback peer.
+    const local = fakeResponse()
+    await route.handler(
+      fakePost({ host: '127.0.0.1:3080' }, '/api/dynamicCordisRunner/inventory', {
+        type: 'client-request', rpcId: RpcId('rpc-ns-local'), method: 'dynamicCordisRunner/inventory', payload: {},
+      }),
+      local.response,
+    )
+    expect(local.state.status).not.toBe(403)
+    expect(reached).toEqual(['dynamicCordisRunner/inventory'])
+
+    await remove()
+    await fiber.dispose()
+  })
+
   it('passes loopback tokenless and admits declared authorities only with the pairing token', async () => {
     const { routes, upgrades, dispose } = await mounted({ trustedHosts: ['harness.example:3080', '192.168.1.5'], pairingTokenEnv: TOKEN_REF })
     // Loopback, no browser markers and no token (curl shape): the fence
