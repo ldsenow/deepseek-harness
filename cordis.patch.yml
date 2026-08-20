@@ -1,0 +1,35 @@
+# lanyard — secure LAN access for the dsh web GUI.
+#
+# This layer changes no harness source. It disables the stock carrier row and
+# inserts a gated one in its place: a WebServer subclass that wraps every
+# route registration with pairing-token admission and terminates TLS in front
+# of the inherited server. Every other row — dsh-client-connection above all —
+# keeps running unmodified, because each registers its routes through
+# ctx.webServer and therefore passes through the gate.
+
+# The stock carrier steps aside; the gated one takes its host and port.
+- id: webserver
+  name: '@deepseek-ai/dsh-host-webserver'
+  disabled: true
+
+# TLS material: generated once on the first all-interfaces boot and reused, so
+# a paired device's accept-once certificate exception survives restarts.
+- insert:
+    - id: lanyard-tls
+      name: '@koalafacts/lanyard/tls'
+      inject: [webStartup]
+      config:
+        enabled: !!js (ctx.webStartup.host ?? '127.0.0.1') === '0.0.0.0'
+        dir: !!js dshHomePath('lanyard-tls')
+
+    # The gated carrier. It provides `webServer`, so every consumer that injects
+    # that service reaches this one instead of the disabled row above.
+    - id: lanyard-webserver
+      name: '@koalafacts/lanyard/webserver'
+      inject: [webStartup, lanyardTls, credentials]
+      config:
+        host: !!js ctx.webStartup.host ?? '127.0.0.1'
+        port: !!js ctx.webStartup.port ?? 3080
+        pairingToken: !!js ctx.webStartup.pairingToken
+        tlsCertPath: !!js ctx.lanyardTls.paths?.certPath
+        tlsKeyPath: !!js ctx.lanyardTls.paths?.keyPath
